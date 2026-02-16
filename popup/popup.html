@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <h1>File Downloader</h1>
+    <span id="badge" class="badge hidden">0</span>
+  </div>
+
+  <input type="text" id="search" placeholder="Filter files..." class="search-input">
+
+  <div class="toolbar">
+    <button id="selectAll">Select All</button>
+    <button id="deselectAll">Deselect All</button>
+    <button id="downloadBtn" class="primary" disabled>Download Selected</button>
+  </div>
+
+  <div id="scanDirBar" class="scan-dir-bar hidden">
+    <button id="scanDirBtn" class="scan-dir-btn">Scan Subdirectories</button>
+    <span id="scanStatus" class="scan-status hidden"></span>
+  </div>
+
+  <div id="fileList" class="file-list">
+    <div id="loading" class="status-msg">Scanning page...</div>
+    <div id="empty" class="status-msg hidden">No downloadable files found.</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
