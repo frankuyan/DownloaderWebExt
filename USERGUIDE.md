@@ -73,19 +73,23 @@ If no files are found, you will see the message: *"No downloadable files found."
 
 ### Understanding the File List
 
-Files are displayed in a grouped list organized by category:
+Files are displayed in a grouped list organized by file type:
 
 ```
-Documents (3)
+PDF (2)
   ☐ 📄 annual-report.pdf                [PDF]
+  ☐ 📄 readme.pdf                       [PDF]
+
+DOC (1)
   ☐ 📝 meeting-notes.docx               [DOCX]
+
+XLS (1)
   ☐ 📊 budget-2024.xlsx                  [XLSX]
 
-Images (2)
+PNG (1)
   ☐ 🖼 banner.png                        [PNG]
-  ☐ 🖼 logo.svg                          [SVG]
 
-Archives (1)
+ZIP (1)
   ☐ 📦 source-code.zip                   [ZIP]
 ```
 
@@ -98,7 +102,7 @@ Each file entry shows:
 | Filename | The name of the file (truncated if too long) |
 | Extension badge | A small label showing the file type (e.g., PDF, PNG) |
 
-Each category group has a **group header** with its own checkbox that toggles all files in that category.
+Each file type group has a **group header** with its own checkbox that toggles all files of that type.
 
 ### Selecting Files
 
@@ -107,11 +111,11 @@ There are multiple ways to select files for download:
 | Method | How |
 |---|---|
 | **Individual file** | Click the checkbox next to any file |
-| **Entire category** | Click the checkbox in the category header (e.g., "Documents") to select or deselect all files in that group |
+| **Entire type group** | Click the checkbox in the type header (e.g., "PDF", "PPT") to select or deselect all files of that type |
 | **All files** | Click the **Select All** button in the toolbar |
 | **Clear selection** | Click the **Deselect All** button in the toolbar |
 
-**Partial selection indicator:** When only some files in a category are selected, the group header checkbox shows a dash (—) indicating partial selection. Clicking it will select all remaining files in that group.
+**Partial selection indicator:** When only some files in a type group are selected, the group header checkbox shows a dash (—) indicating partial selection. Clicking it will select all remaining files in that group.
 
 ### Filtering Files
 
@@ -235,22 +239,27 @@ After a directory scan completes, the "Scan Subdirectories" button changes to **
 
 ---
 
-## File Categories and Icons
+## File Types and Icons
 
-The extension recognizes the following file types and organizes them into categories:
+The extension recognizes the following file types, each displayed as its own group:
 
-| Category | Extensions | Icon |
+| Type Group | Extensions | Icon |
 |---|---|---|
-| **Documents** | PDF | 📄 |
-| | DOC, DOCX | 📝 |
-| | XLS, XLSX | 📊 |
-| | PPT, PPTX | 📊 |
-| **Images** | PNG, JPG, GIF, SVG | 🖼 |
-| **Media** | MP3 | 🎵 |
-| | MP4 | 🎬 |
-| **Archives** | ZIP, RAR | 📦 |
+| **PDF** | PDF | 📄 |
+| **DOC** | DOC, DOCX | 📝 |
+| **TXT** | TXT | 📝 |
+| **XLS** | XLS, XLSX | 📊 |
+| **PPT** | PPT, PPTX | 📊 |
+| **PNG** | PNG | 🖼 |
+| **JPG** | JPG, JPEG | 🖼 |
+| **GIF** | GIF | 🖼 |
+| **SVG** | SVG | 🖼 |
+| **MP3** | MP3 | 🎵 |
+| **MP4** | MP4 | 🎬 |
+| **ZIP** | ZIP | 📦 |
+| **RAR** | RAR | 📦 |
 
-Files with unrecognized extensions that match the supported list are shown with the 📎 fallback icon and placed in the "Other" category.
+Files with unrecognized extensions are shown with the 📎 fallback icon and placed in the "Other" group. Only groups with files found on the page are displayed.
 
 ---
 

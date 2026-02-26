@@ -30,7 +30,7 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 ## Features
 
 - **Page scanning** — Automatically finds all downloadable file links on the current page.
-- **Grouped display** — Files are organized into categories: Documents, Images, Media, and Archives.
+- **Grouped display** — Files are organized by file type (PDF, DOC, PPT, PNG, etc.) with per-type selection.
 - **Bulk selection** — Select All / Deselect All buttons, plus per-group toggle checkboxes.
 - **Search/filter** — Real-time filtering of files by filename.
 - **Bulk download** — Download all selected files with one click; the browser's native download manager handles progress.
@@ -41,12 +41,21 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 
 ## Supported File Types
 
-| Category   | Extensions                              |
-|------------|-----------------------------------------|
-| Documents  | PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX   |
-| Images     | PNG, JPG, GIF, SVG                      |
-| Media      | MP3, MP4                                |
-| Archives   | ZIP, RAR                                |
+| Category    | Extensions           |
+|-------------|----------------------|
+| PDF         | PDF                  |
+| DOC         | DOC, DOCX            |
+| XLS         | XLS, XLSX            |
+| PPT         | PPT, PPTX            |
+| TXT         | TXT                  |
+| PNG         | PNG                  |
+| JPG         | JPG, JPEG            |
+| GIF         | GIF                  |
+| SVG         | SVG                  |
+| MP3         | MP3                  |
+| MP4         | MP4                  |
+| ZIP         | ZIP                  |
+| RAR         | RAR                  |
 
 ---
 
@@ -132,7 +141,7 @@ DownloaderWebExt/
 ┌─────────────────────────────────────────────────────────────────────┐
 │  popup.js                                                           │
 │  1. Receives file list                                              │
-│  2. Groups files by category (Documents, Images, Media, Archives)   │
+│  2. Groups files by type (PDF, DOC, PPT, PNG, etc.)                 │
 │  3. Renders grouped file list with checkboxes                       │
 │  4. Updates badge count                                             │
 └─────────────────────────┬───────────────────────────────────────────┘
@@ -140,14 +149,14 @@ DownloaderWebExt/
                           ▼  (user selects files and clicks Download)
 ┌─────────────────────────────────────────────────────────────────────┐
 │  popup.js                                                           │
-│  Sends { action: "download", urls: [...] } to background script     │
+│  Sends { action: "download", files: [...] } to background script    │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  background.js (service worker)                                     │
-│  1. Receives URL list                                               │
-│  2. Calls chrome.downloads.download() for each URL                  │
+│  background.js (background script)                                  │
+│  1. Receives file list (url + filename pairs)                       │
+│  2. Calls browser.downloads.download() for each file                │
 │  3. Reports back { completed, failed } counts                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -159,7 +168,7 @@ DownloaderWebExt/
 Defines the extension using Manifest V3 format:
 
 - **`action`** — Configures the toolbar popup (`popup/popup.html`) and icons.
-- **`background.service_worker`** — Registers `background.js` as the service worker (Chrome). Firefox also supports this in MV3 as of version 109.
+- **`background.scripts`** — Registers `background.js` as the background script (Firefox). For Chrome compatibility, use `service_worker` instead or include both.
 - **`permissions`** — Declares `activeTab`, `downloads`, and `scripting` (see [Permissions](#permissions)).
 - **`browser_specific_settings.gecko`** — Provides a fixed extension ID and minimum Firefox version for Firefox compatibility.
 
@@ -173,19 +182,20 @@ Injected into the active tab on demand (not declared in `content_scripts` in the
 |---|---|
 | `getFileExtension(url)` | Extracts the file extension from a URL's pathname. Uses `URL` constructor for reliable parsing. Returns lowercase extension or `null`. |
 | `getFilename(url)` | Extracts the filename from the last path segment. Decodes URI components for display. |
-| `scanPage()` | Main scanner. Queries all `<a[href]>` elements, filters by supported extensions, deduplicates by full URL, and returns an array of file objects. |
+| `getDisplayName(link, ext)` | Extracts a human-readable filename from link attributes (download, title, text content, aria-label) with URL filename as fallback. Appends extension if missing. |
+| `scanPage()` | Main scanner. Queries all `<a[href]>` elements, filters by supported extensions, deduplicates by full URL, and returns an array of file objects with display names. |
 
 **Message handling:**
 
-Listens for `{ action: "scanPage" }` messages and responds synchronously with the scan results via `sendResponse()`.
+Listens for `{ action: "scanPage" }` messages and returns a Promise with the scan results (Firefox-compatible).
 
 #### `background.js`
 
-Runs as a service worker (Chrome) or background script (Firefox).
+Runs as a background script (Firefox) or service worker (Chrome).
 
 **Message handling:**
 
-Listens for `{ action: "download", urls: [...] }` messages. Iterates through each URL and calls `chrome.downloads.download()`. Returns `true` from the listener to keep the message channel open for the async response. Reports `{ completed, failed }` counts when all downloads have been initiated.
+Listens for `{ action: "download", files: [...] }` messages. Each file object contains `url` and `filename`. Calls `browser.downloads.download()` for each file with the display filename. Returns a Promise that resolves with `{ completed, failed }` counts when all downloads complete.
 
 #### `popup/popup.js`
 
@@ -194,10 +204,10 @@ The main UI controller. Manages:
 | Concern | Details |
 |---|---|
 | **Tab scanning** | Uses `chrome.tabs.query()` to get the active tab, then `chrome.scripting.executeScript()` to inject the content script, then `chrome.tabs.sendMessage()` to trigger scanning. |
-| **Rendering** | Groups files into categories using the `CATEGORIES` mapping. Renders section headers with group-level checkboxes and individual file items with per-file checkboxes. |
+| **Rendering** | Groups files by file type (PDF, DOC, PPT, etc.) using the `CATEGORIES` mapping. Renders section headers with group-level checkboxes and individual file items with per-file checkboxes. |
 | **Filtering** | The search input triggers `renderFiles(filter)` on every keystroke, re-rendering only files whose filenames match the filter string (case-insensitive). |
 | **Selection** | Tracks selection state via DOM checkbox state. Group checkboxes use the `indeterminate` property for partial selection. Select All / Deselect All operate on all visible checkboxes. |
-| **Downloading** | Collects selected URLs and sends them to the background script. Shows a "Done!" confirmation for 2 seconds after completion. |
+| **Downloading** | Collects selected files (URL + display filename) and sends them to the background script. Files are saved with their display names. Shows a "Done!" confirmation for 2 seconds after completion. |
 
 #### `popup/popup.css`
 
@@ -257,8 +267,8 @@ const SUPPORTED_EXTENSIONS = [
 
 // popup/popup.js
 const CATEGORIES = {
-  Documents: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv"],
-  // ...
+  // ... existing type groups ...
+  CSV: ["csv"],
 };
 
 const TYPE_ICONS = {

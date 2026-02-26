@@ -1,16 +1,26 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
 
 const CATEGORIES = {
-  Documents: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"],
-  Images: ["png", "jpg", "gif", "svg"],
-  Media: ["mp3", "mp4"],
-  Archives: ["zip", "rar"]
+  PDF: ["pdf"],
+  DOC: ["doc", "docx"],
+  XLS: ["xls", "xlsx"],
+  PPT: ["ppt", "pptx"],
+  TXT: ["txt"],
+  PNG: ["png"],
+  JPG: ["jpg", "jpeg"],
+  GIF: ["gif"],
+  SVG: ["svg"],
+  MP3: ["mp3"],
+  MP4: ["mp4"],
+  ZIP: ["zip"],
+  RAR: ["rar"]
 };
 
 const TYPE_ICONS = {
-  pdf: "\u{1F4C4}", doc: "\u{1F4DD}", docx: "\u{1F4DD}", xls: "\u{1F4CA}", xlsx: "\u{1F4CA}",
-  ppt: "\u{1F4CA}", pptx: "\u{1F4CA}", png: "\u{1F5BC}", jpg: "\u{1F5BC}", gif: "\u{1F5BC}",
-  svg: "\u{1F5BC}", mp3: "\u{1F3B5}", mp4: "\u{1F3AC}", zip: "\u{1F4E6}", rar: "\u{1F4E6}"
+  pdf: "\u{1F4C4}", doc: "\u{1F4DD}", docx: "\u{1F4DD}", txt: "\u{1F4DD}",
+  xls: "\u{1F4CA}", xlsx: "\u{1F4CA}", ppt: "\u{1F4CA}", pptx: "\u{1F4CA}",
+  png: "\u{1F5BC}", jpg: "\u{1F5BC}", jpeg: "\u{1F5BC}", gif: "\u{1F5BC}", svg: "\u{1F5BC}",
+  mp3: "\u{1F3B5}", mp4: "\u{1F3AC}", zip: "\u{1F4E6}", rar: "\u{1F4E6}"
 };
 
 let allFiles = [];
@@ -34,13 +44,16 @@ function getCategoryForType(type) {
   return "Other";
 }
 
-function getSelectedUrls() {
+function getSelectedFiles() {
   const checked = fileListEl.querySelectorAll(".file-checkbox:checked");
-  return Array.from(checked).map((cb) => cb.dataset.url);
+  return Array.from(checked).map((cb) => ({
+    url: cb.dataset.url,
+    filename: cb.dataset.filename
+  }));
 }
 
 function updateDownloadBtn() {
-  const count = getSelectedUrls().length;
+  const count = getSelectedFiles().length;
   downloadBtn.disabled = count === 0;
   downloadBtn.textContent = count > 0 ? `Download Selected (${count})` : "Download Selected";
 }
@@ -68,7 +81,7 @@ function renderFiles(filter = "") {
     grouped[cat].push(file);
   }
 
-  const categoryOrder = ["Documents", "Images", "Media", "Archives", "Other"];
+  const categoryOrder = ["PDF", "DOC", "XLS", "PPT", "TXT", "PNG", "JPG", "GIF", "SVG", "MP3", "MP4", "ZIP", "RAR", "Other"];
   let anyVisible = false;
 
   for (const cat of categoryOrder) {
@@ -96,6 +109,7 @@ function renderFiles(filter = "") {
       cb.type = "checkbox";
       cb.className = "file-checkbox";
       cb.dataset.url = file.url;
+      cb.dataset.filename = file.filename;
       cb.addEventListener("change", () => {
         updateGroupCheckbox(section);
         updateDownloadBtn();
@@ -178,6 +192,7 @@ function renderTreeNode(node, depth, filter) {
     cb.type = "checkbox";
     cb.className = "file-checkbox";
     cb.dataset.url = node.url;
+    cb.dataset.filename = node.name;
     cb.addEventListener("change", () => {
       updateAncestorCheckboxes(cb);
       updateDownloadBtn();
@@ -308,7 +323,7 @@ async function scanActiveTab() {
 
     await api.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ["content.js"]
+      files: ["/content.js"]
     });
 
     const response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
@@ -320,7 +335,8 @@ async function scanActiveTab() {
     if (isDirectory) {
       scanDirBar.classList.remove("hidden");
     }
-  } catch {
+  } catch (err) {
+    console.error("Scan failed:", err);
     allFiles = [];
   }
 
@@ -410,16 +426,19 @@ document.getElementById("deselectAll").addEventListener("click", () => {
   updateDownloadBtn();
 });
 
-downloadBtn.addEventListener("click", () => {
-  const urls = getSelectedUrls();
-  if (urls.length === 0) return;
+downloadBtn.addEventListener("click", async () => {
+  const files = getSelectedFiles();
+  if (files.length === 0) return;
 
-  api.runtime.sendMessage({ action: "download", urls }, (result) => {
+  try {
+    const result = await api.runtime.sendMessage({ action: "download", files });
     if (result) {
       downloadBtn.textContent = `Done! (${result.completed} downloaded)`;
       setTimeout(() => updateDownloadBtn(), 2000);
     }
-  });
+  } catch (err) {
+    console.error("Download failed:", err);
+  }
 });
 
 scanActiveTab();

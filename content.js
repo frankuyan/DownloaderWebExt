@@ -1,6 +1,6 @@
 const SUPPORTED_EXTENSIONS = [
-  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-  "png", "jpg", "gif", "svg",
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt",
+  "png", "jpg", "jpeg", "gif", "svg",
   "zip", "rar",
   "mp3", "mp4"
 ];
@@ -22,6 +22,33 @@ function getFilename(url) {
   } catch {
     return null;
   }
+}
+
+function getDisplayName(link, ext) {
+  // 1. Check the download attribute (explicitly set for downloads)
+  const dlAttr = link.getAttribute("download");
+  if (dlAttr) return dlAttr;
+
+  // 2. Check the title attribute
+  const title = link.getAttribute("title");
+  if (title && title.length > 1) {
+    return title.includes(".") ? title : `${title}.${ext}`;
+  }
+
+  // 3. Check link text content (ignore if it looks like a URL/UUID)
+  const text = link.textContent.trim();
+  if (text && text.length > 1 && !/^[0-9a-f-]{20,}/.test(text)) {
+    return text.includes(".") ? text : `${text}.${ext}`;
+  }
+
+  // 4. Check aria-label
+  const aria = link.getAttribute("aria-label");
+  if (aria && aria.length > 1) {
+    return aria.includes(".") ? aria : `${aria}.${ext}`;
+  }
+
+  // 5. Fall back to URL filename
+  return getFilename(link.href) || `file.${ext}`;
 }
 
 function isDirectoryListing() {
@@ -56,9 +83,10 @@ function scanPage() {
     const ext = getFileExtension(href);
     if (ext && SUPPORTED_EXTENSIONS.includes(ext) && !seen.has(href)) {
       seen.add(href);
+      const displayName = getDisplayName(link, ext);
       files.push({
         url: href,
-        filename: getFilename(href) || `file.${ext}`,
+        filename: displayName,
         type: ext
       });
     }
@@ -146,9 +174,9 @@ async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
 // Use browser namespace if available, fall back to chrome
 const api = typeof browser !== "undefined" ? browser : chrome;
 
-api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+api.runtime.onMessage.addListener((message, _sender) => {
   if (message.action === "scanPage") {
-    sendResponse(scanPage());
+    return Promise.resolve(scanPage());
   }
 });
 
