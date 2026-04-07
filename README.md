@@ -182,7 +182,8 @@ Injected into the active tab on demand (not declared in `content_scripts` in the
 |---|---|
 | `getFileExtension(url)` | Extracts the file extension from a URL's pathname. Uses `URL` constructor for reliable parsing. Returns lowercase extension or `null`. |
 | `getFilename(url)` | Extracts the filename from the last path segment. Decodes URI components for display. |
-| `getDisplayName(link, ext)` | Extracts a human-readable filename from link attributes (download, title, text content, aria-label) with URL filename as fallback. Appends extension if missing. |
+| `sanitizeFilename(name)` | Strips common download prefixes (e.g. Weebly's "Download file: ") and replaces characters invalid in filenames on Windows/macOS/Linux (`<>:"/\|?*`) with underscores. |
+| `getDisplayName(link, ext)` | Extracts a human-readable filename from link attributes (download, title, text content, aria-label) with URL filename as fallback. Appends extension if missing. All names are passed through `sanitizeFilename()`. |
 | `scanPage()` | Main scanner. Queries all `<a[href]>` elements, filters by supported extensions, deduplicates by full URL, and returns an array of file objects with display names. |
 
 **Message handling:**
@@ -195,7 +196,7 @@ Runs as a background script (Firefox) or service worker (Chrome).
 
 **Message handling:**
 
-Listens for `{ action: "download", files: [...] }` messages. Each file object contains `url` and `filename`. Calls `browser.downloads.download()` for each file with the display filename. Returns a Promise that resolves with `{ completed, failed }` counts when all downloads complete.
+Listens for `{ action: "download", files: [...] }` messages. Each file object contains `url` and `filename`. Filenames are sanitized (invalid characters replaced) before calling `browser.downloads.download()`. Returns a Promise that resolves with `{ completed, failed }` counts when all downloads complete.
 
 #### `popup/popup.js`
 
@@ -305,7 +306,7 @@ const TYPE_ICONS = {
 |---|---|---|
 | Popup shows "No downloadable files found" | Page has no `<a>` tags with matching file extensions in `href` | Verify the page actually has direct file links. Dynamically loaded links or links behind JavaScript may not be detected. |
 | "Cannot access contents of this page" | Extension lacks permission for the page (e.g., `chrome://` pages, browser internal pages) | `activeTab` only works on regular web pages. Browser-internal pages are restricted. |
-| Downloads don't start | Browser blocking downloads or missing `downloads` permission | Check the browser's download settings. Some browsers block multiple simultaneous downloads — you may see a permission prompt. |
+| Downloads don't start | Browser blocking downloads, missing `downloads` permission, or invalid characters in filename | Check the browser's download settings. Filenames are automatically sanitized (colons, quotes, etc. replaced), but if issues persist, check the browser console for errors. |
 | Content script injection fails | Page uses strict CSP or is a protected page | Some pages (browser settings, extension pages, web store) block content script injection entirely. |
 
 ---

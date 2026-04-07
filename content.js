@@ -24,27 +24,40 @@ function getFilename(url) {
   }
 }
 
+function sanitizeFilename(name) {
+  // Strip common download prefixes (e.g. Weebly's "Download file: ")
+  name = name.replace(/^Download\s+file:\s*/i, "");
+  // Replace characters invalid in filenames on Windows/macOS/Linux
+  name = name.replace(/[<>:"/\\|?*]/g, "_");
+  // Collapse multiple underscores/spaces
+  name = name.replace(/_{2,}/g, "_").trim();
+  return name;
+}
+
 function getDisplayName(link, ext) {
   // 1. Check the download attribute (explicitly set for downloads)
   const dlAttr = link.getAttribute("download");
-  if (dlAttr) return dlAttr;
+  if (dlAttr) return sanitizeFilename(dlAttr);
 
   // 2. Check the title attribute
   const title = link.getAttribute("title");
   if (title && title.length > 1) {
-    return title.includes(".") ? title : `${title}.${ext}`;
+    const clean = sanitizeFilename(title);
+    return clean.includes(".") ? clean : `${clean}.${ext}`;
   }
 
   // 3. Check link text content (ignore if it looks like a URL/UUID)
   const text = link.textContent.trim();
   if (text && text.length > 1 && !/^[0-9a-f-]{20,}/.test(text)) {
-    return text.includes(".") ? text : `${text}.${ext}`;
+    const clean = sanitizeFilename(text);
+    return clean.includes(".") ? clean : `${clean}.${ext}`;
   }
 
   // 4. Check aria-label
   const aria = link.getAttribute("aria-label");
   if (aria && aria.length > 1) {
-    return aria.includes(".") ? aria : `${aria}.${ext}`;
+    const clean = sanitizeFilename(aria);
+    return clean.includes(".") ? clean : `${clean}.${ext}`;
   }
 
   // 5. Fall back to URL filename

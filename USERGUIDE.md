@@ -324,6 +324,8 @@ This is a browser security restriction and cannot be bypassed.
 - Open one of the file URLs directly in a new tab to verify it's accessible.
 - Check your browser's download settings to ensure downloads are not blocked.
 
+> **Note:** The extension automatically sanitizes filenames by stripping common prefixes (e.g. "Download file:") and replacing characters that are invalid on Windows/macOS (such as `:`, `"`, `<`, `>`, `|`, `?`, `*`). This prevents download failures on sites like Weebly that include these characters in link titles.
+
 ### Content script injection fails
 
 Some pages block extensions from injecting scripts due to strict Content Security Policies (CSP). This is common on:
