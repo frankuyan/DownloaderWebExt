@@ -15,18 +15,25 @@ A comprehensive guide to installing, using, and getting the most out of the File
   - [Understanding the File List](#understanding-the-file-list)
   - [Selecting Files](#selecting-files)
   - [Filtering Files](#filtering-files)
+  - [Sorting Files](#sorting-files)
   - [Downloading Files](#downloading-files)
+  - [Download Progress and Retry](#download-progress-and-retry)
+  - [Downloading to a Subfolder](#downloading-to-a-subfolder)
+  - [Copying URLs](#copying-urls)
+- [Media Detection](#media-detection)
 - [Directory Scanning](#directory-scanning)
   - [What Is a Directory Listing?](#what-is-a-directory-listing)
   - [Scanning Subdirectories](#scanning-subdirectories)
   - [Using the Tree View](#using-the-tree-view)
   - [Selecting Files in Tree View](#selecting-files-in-tree-view)
   - [Rescanning Directories](#rescanning-directories)
+- [Dark Mode](#dark-mode)
+- [Remembered Preferences](#remembered-preferences)
 - [File Categories and Icons](#file-categories-and-icons)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Tips and Best Practices](#tips-and-best-practices)
 - [Troubleshooting](#troubleshooting)
 - [Frequently Asked Questions](#frequently-asked-questions)
-- [Keyboard Shortcuts](#keyboard-shortcuts)
 
 ---
 
@@ -66,8 +73,8 @@ After installation, the extension icon may be hidden behind the extensions menu 
 
 1. Navigate to any web page that contains links to downloadable files — for example, a page with PDF links, a file index, an image gallery, or a resource download page.
 2. Click the **File Downloader** icon in your browser toolbar.
-3. The popup opens and **automatically scans** the current page for downloadable file links.
-4. A blue badge next to the title shows the total number of files found.
+3. The popup opens and **automatically scans** the current page for downloadable file links and embedded media.
+4. A blue badge next to the title shows the total number of files found. This count also appears on the extension icon itself.
 
 If no files are found, you will see the message: *"No downloadable files found."*
 
@@ -83,11 +90,9 @@ PDF (2)
 DOC (1)
   ☐ 📝 meeting-notes.docx               [DOCX]
 
-XLS (1)
-  ☐ 📊 budget-2024.xlsx                  [XLSX]
-
-PNG (1)
-  ☐ 🖼 banner.png                        [PNG]
+PNG (2)
+  ☐ 🖼 banner.png              MEDIA    [PNG]
+  ☐ 🖼 hero-image.png          MEDIA    [PNG]
 
 ZIP (1)
   ☐ 📦 source-code.zip                   [ZIP]
@@ -99,8 +104,11 @@ Each file entry shows:
 |---|---|
 | Checkbox | Select or deselect this file for download |
 | Icon | An emoji representing the file type |
-| Filename | The name of the file (truncated if too long) |
+| Filename | The name of the file (truncated if too long; hover to see full name) |
+| Source tag | A "MEDIA" tag appears on files found via `<img>`, `<video>`, or `<audio>` tags rather than download links |
 | Extension badge | A small label showing the file type (e.g., PDF, PNG) |
+
+Hovering over any file shows the full source URL in a tooltip.
 
 Each file type group has a **group header** with its own checkbox that toggles all files of that type.
 
@@ -112,39 +120,105 @@ There are multiple ways to select files for download:
 |---|---|
 | **Individual file** | Click the checkbox next to any file |
 | **Entire type group** | Click the checkbox in the type header (e.g., "PDF", "PPT") to select or deselect all files of that type |
-| **All files** | Click the **Select All** button in the toolbar |
+| **All files** | Click the **Select All** button in the toolbar, or press `Ctrl+A` / `Cmd+A` |
 | **Clear selection** | Click the **Deselect All** button in the toolbar |
 
 **Partial selection indicator:** When only some files in a type group are selected, the group header checkbox shows a dash (—) indicating partial selection. Clicking it will select all remaining files in that group.
+
+**Remembered preferences:** When you check or uncheck a file type group, the extension remembers your preference. The next time you open the popup on any page, your preferred categories will be automatically selected.
 
 ### Filtering Files
 
 Use the search bar at the top of the popup to filter files by name:
 
-1. Type any text in the **"Filter files..."** input field.
+1. Type any text in the **"Filter files..."** input field (or press `/` to focus it).
 2. The file list updates in real time, showing only files whose names contain your search text.
 3. The search is **case-insensitive** — typing "report" will match "Report.pdf", "REPORT.docx", etc.
-4. Clear the search field to show all files again.
+4. Press `Escape` to clear the filter and show all files again.
 
 Filtering works in both the flat list view and the tree view. In tree view, entire directory branches that contain no matching files are hidden.
+
+### Sorting Files
+
+Use the **sort dropdown** next to the search bar to change file order within each group:
+
+| Option | Behavior |
+|---|---|
+| **Default** | Files appear in the order they were found on the page |
+| **A → Z** | Alphabetical order by filename |
+| **Z → A** | Reverse alphabetical order |
+
+Sorting works in both flat and tree views. In tree view, files within each directory are sorted while directories remain in their original order.
 
 ### Downloading Files
 
 1. Select the files you want to download using any of the selection methods above.
 2. The **Download Selected** button shows the number of selected files, e.g., `Download Selected (5)`.
-3. Click the button to begin downloading.
-4. Once initiated, the button briefly displays **"Done! (N downloaded)"** for 2 seconds as confirmation.
-5. If any downloads fail, you will see the count of failures alongside successes.
+3. Click the button (or press `Ctrl+D` / `Cmd+D`) to begin downloading.
+4. A **progress bar** appears showing real-time download status.
+5. Downloads are processed in a queue — up to 3 files download simultaneously. This prevents browser throttling that occurs when many downloads start at once.
 
-**Where do files go?** All files are saved to your browser's default download location. You can check and change this in your browser settings:
+**Where do files go?** All files are saved to your browser's default download location (or a subfolder if specified). You can check and change this in your browser settings:
 
 - **Chrome:** Settings > Downloads > Location
 - **Firefox:** Settings > General > Files and Applications > Downloads
 
-To view download progress, open your browser's download manager:
+### Download Progress and Retry
 
-- **Chrome:** Press `Ctrl+J` (Windows/Linux) or `Cmd+Shift+J` (macOS)
-- **Firefox:** Press `Ctrl+J` (Windows/Linux) or `Cmd+J` (macOS)
+While downloads are running, a progress bar shows:
+
+```
+┌──────────────────────────────────────────────┐
+│ ████████████░░░░░░░░░░░░  5/12 completed     │
+│                           · 3 active · 4 queued│
+└──────────────────────────────────────────────┘
+```
+
+- **Completed** — Number of successfully downloaded files
+- **Active** — Files currently downloading (up to 3)
+- **Queued** — Files waiting to start
+
+If any downloads fail (due to network errors, broken URLs, etc.), a **Retry Failed** button appears:
+
+```
+Done: 10 downloaded, 2 failed        [Retry Failed (2)]
+```
+
+Click the button to re-attempt all failed downloads. You can retry as many times as needed.
+
+### Downloading to a Subfolder
+
+The **"Save to subfolder"** input lets you organize downloads:
+
+1. Type a folder name in the input field (e.g., `MyProject` or `Lecture Notes`).
+2. All downloaded files will be saved inside that subfolder within your default download directory.
+3. Leave the field empty to download directly to the default location.
+
+Example: If your download folder is `~/Downloads` and you type `APHG Files`, files will be saved to `~/Downloads/APHG Files/`.
+
+### Copying URLs
+
+The **Copy URLs** button copies all selected file URLs to your clipboard as a newline-separated list. This is useful for:
+
+- Pasting into a download manager
+- Using with command-line tools like `wget` or `curl`
+- Sharing file lists with others
+- Keeping a record of file sources
+
+---
+
+## Media Detection
+
+In addition to scanning `<a>` download links, File Downloader detects media embedded directly on the page:
+
+| Tag | What's Detected |
+|---|---|
+| `<img src="...">` | Images with supported extensions (PNG, JPG, GIF, SVG). Icons and sprites smaller than 100x100 pixels are automatically excluded. |
+| `<video src="...">` | Video files (MP4) |
+| `<audio src="...">` | Audio files (MP3) |
+| `<source src="...">` | Media sources inside `<video>` and `<audio>` elements |
+
+Media files appear in the file list alongside link-detected files, tagged with a small **MEDIA** label so you can distinguish their source. Files found via both a link and a media tag are only listed once (the link version takes priority).
 
 ---
 
@@ -175,7 +249,7 @@ To scan all subdirectories:
 
 1. Click the **Scan Subdirectories** button.
 2. The extension begins recursively visiting each subdirectory linked from the page.
-3. A real-time status message shows the current directory being scanned and the depth level, e.g., *"Scanning: docs/2024/ (depth 2)"*.
+3. A real-time status message shows how many directories have been explored.
 4. Scanning continues up to **5 levels deep** to prevent excessive crawling.
 5. When complete, the view switches from the flat file list to an interactive **tree view**.
 
@@ -239,6 +313,28 @@ After a directory scan completes, the "Scan Subdirectories" button changes to **
 
 ---
 
+## Dark Mode
+
+File Downloader automatically adapts to your system's color scheme. If your operating system or browser is set to dark mode, the popup will use a dark theme with muted colors that are easy on the eyes.
+
+No configuration is needed — the extension detects your preference via `prefers-color-scheme` and switches automatically.
+
+---
+
+## Remembered Preferences
+
+The extension remembers which file type categories you select:
+
+1. When you check a category group checkbox (e.g., "PDF"), the preference is saved.
+2. When you uncheck a category, that preference is saved too.
+3. The next time you open the popup on any page, your preferred categories are automatically pre-selected.
+
+This is useful if you always want to download PDFs but never images — check PDF once, and it will be pre-selected on every page.
+
+Preferences are stored locally in your browser and persist across sessions.
+
+---
+
 ## File Types and Icons
 
 The extension recognizes the following file types, each displayed as its own group:
@@ -263,25 +359,43 @@ Files with unrecognized extensions are shown with the 📎 fallback icon and pla
 
 ---
 
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+A` / `Cmd+A` | Select all files (when not typing in search/subfolder input) |
+| `Ctrl+D` / `Cmd+D` | Download all selected files |
+| `/` | Focus the search/filter input |
+| `Escape` | Clear the search filter and unfocus |
+| `Tab` | Move focus between elements |
+| `Space` | Toggle the focused checkbox |
+| `Enter` | Activate the focused button |
+| `Ctrl+J` / `Cmd+J` | Open the browser's download manager (works outside the popup) |
+
+---
+
 ## Tips and Best Practices
 
 ### Getting the Best Results
 
 - **Look for pages with direct file links.** The extension detects files linked with `<a href="...">` HTML tags. Pages that list direct download links work best.
+- **Image galleries work too.** The extension now detects `<img>` tags, so image galleries and photo pages will show downloadable images.
 - **Use directory listings.** File servers with "Index of" pages are ideal — the directory scan feature can recursively find all files across folders.
 - **Filter before selecting.** On pages with many files, use the search bar to narrow down to what you need before selecting.
 
 ### Managing Large Downloads
 
-- **Download in batches.** If a page has many files (50+), consider downloading them in smaller batches to avoid browser throttling.
+- **The queue handles it.** Unlike before, you don't need to download in batches. The built-in queue processes up to 3 files at a time, preventing browser throttling.
+- **Use subfolders.** When downloading many files, use the subfolder option to keep them organized.
 - **Check your download folder.** Before bulk downloading, make sure your download folder has enough disk space.
 - **Watch for browser prompts.** Some browsers ask for permission when multiple downloads are triggered at once. Allow the downloads when prompted.
 - **Use the browser's download manager** (`Ctrl+J` / `Cmd+J`) to monitor progress, pause, or cancel individual downloads.
+- **Use Copy URLs for external tools.** For very large batches, copy URLs and use a download manager like `wget` or `aria2` for better control.
 
 ### Working with Directory Scans
 
 - **Be patient with deep directory structures.** Scanning many nested subdirectories takes time as each folder must be fetched individually.
-- **Watch the scan status.** The status text shows which directory is currently being scanned and at what depth level.
+- **Watch the scan status.** The status text shows how many directories have been explored.
 - **Use tree view filtering.** After a directory scan, use the search bar to find specific files within the tree structure.
 
 ---
@@ -291,7 +405,7 @@ Files with unrecognized extensions are shown with the 📎 fallback icon and pla
 ### No files are found on the page
 
 **Possible causes:**
-- The page does not contain any `<a>` tag links to files with supported extensions.
+- The page does not contain any `<a>` tag links or media elements with supported extensions.
 - Files are loaded dynamically via JavaScript after the page loads (not detectable).
 - File URLs do not have a recognizable file extension (e.g., API-style URLs like `/download?id=123`).
 
@@ -350,6 +464,13 @@ If you're on a directory listing but the button doesn't appear, the page may use
 - Only same-origin (same website) subdirectories are followed.
 - If the server rate-limits requests, some directories may be skipped.
 
+### Too many images detected
+
+If a page has many embedded images you don't want:
+- Use the search filter to narrow down to specific file names.
+- Uncheck the image type groups (PNG, JPG, etc.) — the extension will remember this preference.
+- Images smaller than 100x100 pixels are already filtered out automatically.
+
 ---
 
 ## Frequently Asked Questions
@@ -358,7 +479,7 @@ If you're on a directory listing but the button doesn't appear, the page may use
 A: No. The extension works entirely locally in your browser. It does not send any data to external servers, does not track usage, and does not include analytics. The only network requests it makes are to the web pages and files you choose to scan and download.
 
 **Q: Can I choose where files are downloaded to?**
-A: Files are saved to your browser's default download location. You can change this in your browser settings (Chrome: Settings > Downloads; Firefox: Settings > General > Downloads). The extension does not provide its own folder picker.
+A: Files are saved to your browser's default download location. You can use the "Save to subfolder" option to create a named subfolder. To change the default location, update your browser settings (Chrome: Settings > Downloads; Firefox: Settings > General > Downloads).
 
 **Q: Does it work with password-protected pages?**
 A: Yes, as long as you are already logged in and can see the page in your browser. The extension scans the page as you see it. However, if individual file downloads require separate authentication, those downloads may fail.
@@ -367,16 +488,22 @@ A: Yes, as long as you are already logged in and can see the page in your browse
 A: The extension scans the currently active tab when you open the popup. To download files from multiple pages, process one tab at a time.
 
 **Q: Why are some files on the page not detected?**
-A: The extension only detects files linked via `<a href="...">` tags with recognized file extensions. Files that are:
-- Embedded directly (e.g., `<img src="...">`, `<video src="...">`)
+A: The extension detects files linked via `<a href="...">` tags and embedded via `<img>`, `<video>`, `<audio>` tags with recognized file extensions. Files that are:
 - Loaded dynamically via JavaScript
 - Behind API-style URLs without file extensions
 - Inside iframes
+- Referenced only in CSS
 
 ...will not be detected.
 
 **Q: Is there a limit to how many files I can download?**
-A: There is no hard limit imposed by the extension. However, browsers may throttle or prompt for confirmation when many downloads are triggered simultaneously. For best results, download in batches of 20-30 files at a time.
+A: There is no hard limit. The download queue processes up to 3 files at a time, so even large batches (100+ files) are handled smoothly without overwhelming the browser.
+
+**Q: What happens if I close the popup during a download?**
+A: Downloads continue in the background. The browser's download manager (`Ctrl+J` / `Cmd+J`) shows all active downloads. However, the popup's progress bar will not resume if you reopen it — check the download manager instead.
+
+**Q: How do I reset my remembered type preferences?**
+A: Uncheck all group checkboxes that are auto-selected, and the preferences will be cleared. Alternatively, you can clear the extension's storage via the browser's developer tools.
 
 **Q: Does the extension work offline?**
 A: The extension itself loads offline, but scanning and downloading require an active internet connection since it needs to access web pages and download files from servers.
@@ -385,19 +512,6 @@ A: The extension itself loads offline, but scanning and downloading require an a
 A: The extension supports:
 - **Google Chrome** (and Chromium-based browsers like Edge, Brave, Vivaldi)
 - **Mozilla Firefox** version 109 or later
-
----
-
-## Keyboard Shortcuts
-
-The popup supports standard browser keyboard interactions:
-
-| Shortcut | Action |
-|---|---|
-| `Tab` | Move focus between elements (search bar, buttons, checkboxes) |
-| `Space` | Toggle the focused checkbox |
-| `Enter` | Activate the focused button |
-| `Ctrl+J` / `Cmd+J` | Open the browser's download manager (works outside the popup) |
 
 ---
 

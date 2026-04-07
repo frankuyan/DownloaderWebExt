@@ -1,3 +1,54 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --text: #1a1a1a;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --border: #d1d5db;
+  --border-light: #e5e7eb;
+  --hover: #f3f4f6;
+  --input-bg: #ffffff;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-disabled: #93c5fd;
+  --scan-bg: #eff6ff;
+  --scan-border: #bfdbfe;
+  --progress-bg: #f0f9ff;
+  --progress-border: #bae6fd;
+  --progress-track: #e5e7eb;
+  --retry-bg: #fef2f2;
+  --retry-border: #fecaca;
+  --retry-text: #dc2626;
+  --source-bg: #e0f2fe;
+  --source-text: #0369a1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a2e;
+    --text: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #334155;
+    --border-light: #1e293b;
+    --hover: #1e293b;
+    --input-bg: #1e293b;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --accent-disabled: #1e3a5f;
+    --scan-bg: #172554;
+    --scan-border: #1e3a5f;
+    --progress-bg: #172554;
+    --progress-border: #1e3a5f;
+    --progress-track: #334155;
+    --retry-bg: #450a0a;
+    --retry-border: #7f1d1d;
+    --retry-text: #fca5a5;
+    --source-bg: #0c4a6e;
+    --source-text: #7dd3fc;
+  }
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -5,15 +56,17 @@
 }
 
 body {
-  width: 380px;
-  max-height: 500px;
+  width: 400px;
+  max-height: 520px;
   overflow-y: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 13px;
-  color: #1a1a1a;
+  color: var(--text);
+  background: var(--bg);
   padding: 12px;
 }
 
+/* Header */
 .header {
   display: flex;
   align-items: center;
@@ -27,7 +80,7 @@ h1 {
 }
 
 .badge {
-  background: #2563eb;
+  background: var(--accent);
   color: #fff;
   font-size: 11px;
   font-weight: 600;
@@ -39,57 +92,161 @@ h1 {
   display: none !important;
 }
 
-.search-input {
-  width: 100%;
-  padding: 7px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 13px;
-  margin-bottom: 10px;
-  outline: none;
-}
-
-.search-input:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
-}
-
-.toolbar {
+/* Search row */
+.search-row {
   display: flex;
   gap: 6px;
   margin-bottom: 10px;
 }
 
+.search-input {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--input-bg);
+  color: var(--text);
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.sort-select {
+  padding: 7px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  background: var(--input-bg);
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+}
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
 button {
   padding: 6px 12px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--input-bg);
   font-size: 12px;
   cursor: pointer;
-  color: #374151;
+  color: var(--text);
 }
 
 button:hover {
-  background: #f3f4f6;
+  background: var(--hover);
 }
 
 button.primary {
-  background: #2563eb;
+  background: var(--accent);
   color: #fff;
-  border-color: #2563eb;
+  border-color: var(--accent);
 }
 
 button.primary:hover {
-  background: #1d4ed8;
+  background: var(--accent-hover);
 }
 
 button.primary:disabled {
-  background: #93c5fd;
-  border-color: #93c5fd;
+  background: var(--accent-disabled);
+  border-color: var(--accent-disabled);
   cursor: default;
 }
 
+/* Options row */
+.options-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.subfolder-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.subfolder-input {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  width: 160px;
+  background: var(--input-bg);
+  color: var(--text);
+  outline: none;
+}
+
+.subfolder-input:focus {
+  border-color: var(--accent);
+}
+
+/* Download progress */
+.download-progress {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--progress-bg);
+  border: 1px solid var(--progress-border);
+  border-radius: 6px;
+}
+
+.progress-bar-track {
+  height: 6px;
+  background: var(--progress-track);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.progress-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.progress-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.retry-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: var(--retry-bg);
+  border-color: var(--retry-border);
+  color: var(--retry-text);
+  white-space: nowrap;
+}
+
+.retry-btn:hover {
+  opacity: 0.85;
+}
+
+/* File list */
 .file-list {
   display: flex;
   flex-direction: column;
@@ -99,7 +256,7 @@ button.primary:disabled {
 .status-msg {
   text-align: center;
   padding: 24px 0;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .group-header {
@@ -109,10 +266,10 @@ button.primary:disabled {
   padding: 6px 4px 4px;
   font-weight: 600;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-light);
   cursor: pointer;
   user-select: none;
 }
@@ -130,7 +287,7 @@ button.primary:disabled {
 }
 
 .file-item:hover {
-  background: #f3f4f6;
+  background: var(--hover);
 }
 
 .file-item input[type="checkbox"] {
@@ -144,7 +301,7 @@ button.primary:disabled {
   text-align: center;
   font-size: 11px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .file-name {
@@ -160,7 +317,19 @@ button.primary:disabled {
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
-  color: #9ca3af;
+  color: var(--text-muted);
+}
+
+.source-tag {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--source-bg);
+  color: var(--source-text);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 /* Scan Subdirectories bar */
@@ -170,32 +339,32 @@ button.primary:disabled {
   gap: 8px;
   margin-bottom: 10px;
   padding: 6px 8px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  background: var(--scan-bg);
+  border: 1px solid var(--scan-border);
   border-radius: 6px;
 }
 
 .scan-dir-btn {
-  background: #2563eb;
+  background: var(--accent);
   color: #fff;
-  border-color: #2563eb;
+  border-color: var(--accent);
   font-weight: 600;
   white-space: nowrap;
 }
 
 .scan-dir-btn:hover {
-  background: #1d4ed8;
+  background: var(--accent-hover);
 }
 
 .scan-dir-btn:disabled {
-  background: #93c5fd;
-  border-color: #93c5fd;
+  background: var(--accent-disabled);
+  border-color: var(--accent-disabled);
   cursor: default;
 }
 
 .scan-status {
   font-size: 11px;
-  color: #4b5563;
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -217,11 +386,11 @@ button.primary:disabled {
   user-select: none;
   font-size: 12px;
   font-weight: 600;
-  color: #374151;
+  color: var(--text);
 }
 
 .dir-node:hover {
-  background: #f3f4f6;
+  background: var(--hover);
 }
 
 .dir-node input[type="checkbox"] {
@@ -234,7 +403,7 @@ button.primary:disabled {
   width: 14px;
   text-align: center;
   font-size: 10px;
-  color: #6b7280;
+  color: var(--text-secondary);
   transition: transform 0.15s;
 }
 
@@ -258,7 +427,7 @@ button.primary:disabled {
   flex-shrink: 0;
   font-size: 10px;
   font-weight: 600;
-  color: #9ca3af;
+  color: var(--text-muted);
 }
 
 .tree-children {
@@ -279,7 +448,7 @@ button.primary:disabled {
 }
 
 .tree-file:hover {
-  background: #f3f4f6;
+  background: var(--hover);
 }
 
 .tree-file input[type="checkbox"] {

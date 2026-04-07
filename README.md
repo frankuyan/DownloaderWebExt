@@ -1,6 +1,6 @@
 # File Downloader — Browser Extension
 
-A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for downloadable file links, displays them in a popup with checkboxes, and supports bulk downloading.
+A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for downloadable file links and media, displays them in a popup with checkboxes, and supports bulk downloading with a queued download manager.
 
 ---
 
@@ -29,12 +29,25 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 
 ## Features
 
-- **Page scanning** — Automatically finds all downloadable file links on the current page.
+- **Page scanning** — Automatically finds downloadable file links (`<a>` tags) and embedded media (`<img>`, `<video>`, `<audio>` tags) on the current page.
 - **Grouped display** — Files are organized by file type (PDF, DOC, PPT, PNG, etc.) with per-type selection.
+- **Media detection** — Images, videos, and audio files embedded on the page are detected and tagged as "media" sources. Small icons/sprites (< 100px) are automatically filtered out.
 - **Bulk selection** — Select All / Deselect All buttons, plus per-group toggle checkboxes.
 - **Search/filter** — Real-time filtering of files by filename.
-- **Bulk download** — Download all selected files with one click; the browser's native download manager handles progress.
+- **Sort** — Sort files by name (A-Z or Z-A) within each group via dropdown.
+- **Queued downloads** — Downloads are processed in a queue with up to 3 concurrent downloads, preventing browser throttling.
+- **Download progress** — Real-time progress bar showing completed, active, and queued download counts.
+- **Retry failed** — Failed downloads can be retried with a single click.
+- **Subfolder support** — Optionally download files into a named subfolder within the default download directory.
+- **Copy URLs** — Copy selected file URLs to clipboard for use with external tools (wget, curl, etc.).
+- **Duplicate filename detection** — Files with identical display names are automatically numbered (e.g., `report (2).pdf`).
+- **Remember preferences** — Remembers which file type categories you typically select, auto-checking them on the next page.
+- **Extension badge** — Shows file count on the toolbar icon so you can see at a glance if a page has files.
+- **Dark mode** — Automatically adapts to your system's dark/light color scheme.
+- **Keyboard shortcuts** — `Ctrl+A` select all, `Ctrl+D` download, `/` focus search, `Escape` clear filter.
+- **Filename sanitization** — Strips common prefixes (e.g., Weebly's "Download file:") and replaces characters invalid on Windows/macOS.
 - **File count badge** — Shows how many downloadable files were found.
+- **Directory scanning** — Recursively scans subdirectories on file server index pages with an interactive tree view.
 - **Cross-browser** — Works in both Chrome (MV3) and Firefox (109+).
 
 ---
@@ -84,12 +97,15 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 ## Usage
 
 1. Navigate to any web page that contains links to downloadable files (e.g., a page with PDF links, an image gallery, a file index).
-2. Click the **File Downloader** icon in the browser toolbar.
+2. Click the **File Downloader** icon in the browser toolbar. The badge on the icon shows the file count.
 3. The popup opens and automatically scans the page. Found files appear grouped by category.
 4. **Filter** — Type in the search bar to narrow down files by name.
-5. **Select files** — Check individual files, use group header checkboxes to toggle entire categories, or use the **Select All** / **Deselect All** buttons.
-6. Click **Download Selected** to start downloading. The button shows a count of selected files.
-7. Download progress and management is handled by the browser's built-in download manager (Ctrl+J / Cmd+J).
+5. **Sort** — Use the dropdown next to search to sort files alphabetically.
+6. **Select files** — Check individual files, use group header checkboxes to toggle entire categories, or use the **Select All** / **Deselect All** buttons.
+7. **Subfolder** — Optionally type a subfolder name to organize downloads.
+8. Click **Download Selected** to start downloading. A progress bar shows real-time status.
+9. If any downloads fail, click **Retry Failed** to re-download them.
+10. Use **Copy URLs** to copy selected file URLs to clipboard.
 
 ---
 
@@ -100,16 +116,16 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 ```
 DownloaderWebExt/
 ├── manifest.json          # Extension manifest (MV3, cross-browser)
-├── content.js             # Content script — scans page for file links
-├── background.js          # Service worker — handles download API calls
+├── content.js             # Content script — scans page for file links and media
+├── background.js          # Background script — queued download manager
 ├── popup/
 │   ├── popup.html         # Popup UI structure
-│   ├── popup.css          # Popup styling
-│   └── popup.js           # Popup logic (scan trigger, rendering, selection, download)
+│   ├── popup.css          # Popup styling (light + dark mode)
+│   └── popup.js           # Popup logic (scan, rendering, selection, download, preferences)
 ├── icons/
-│   ├── icon-16.png        # Toolbar icon (16×16)
-│   ├── icon-48.png        # Extension management icon (48×48)
-│   └── icon-128.png       # Chrome Web Store / large icon (128×128)
+│   ├── icon-16.png        # Toolbar icon (16x16)
+│   ├── icon-48.png        # Extension management icon (48x48)
+│   └── icon-128.png       # Chrome Web Store / large icon (128x128)
 └── README.md              # This file
 ```
 
@@ -126,38 +142,41 @@ DownloaderWebExt/
 │  1. Queries active tab                                              │
 │  2. Injects content.js via chrome.scripting.executeScript()         │
 │  3. Sends { action: "scanPage" } message to content script          │
+│  4. Loads type preferences from storage                             │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  content.js (runs in the web page context)                          │
 │  1. Queries all <a href="..."> elements                             │
-│  2. Filters by supported file extensions                            │
-│  3. Deduplicates by URL                                             │
-│  4. Returns array of { url, filename, type }                        │
+│  2. Scans <img>, <video>, <audio>, <source> tags for media          │
+│  3. Filters by supported file extensions                            │
+│  4. Deduplicates by URL, then deduplicates filenames                │
+│  5. Returns array of { url, filename, type, source }                │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  popup.js                                                           │
 │  1. Receives file list                                              │
-│  2. Groups files by type (PDF, DOC, PPT, PNG, etc.)                 │
-│  3. Renders grouped file list with checkboxes                       │
-│  4. Updates badge count                                             │
+│  2. Sets badge count on extension icon                              │
+│  3. Groups files by type with remembered preferences                │
+│  4. Renders grouped file list with checkboxes and source tags       │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │
                           ▼  (user selects files and clicks Download)
 ┌─────────────────────────────────────────────────────────────────────┐
 │  popup.js                                                           │
-│  Sends { action: "download", files: [...] } to background script    │
+│  Opens port ("downloads") to background, sends files + subfolder    │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  background.js (background script)                                  │
-│  1. Receives file list (url + filename pairs)                       │
-│  2. Calls browser.downloads.download() for each file                │
-│  3. Reports back { completed, failed } counts                       │
+│  background.js (download queue manager)                             │
+│  1. Queues files, processes up to 3 concurrent downloads            │
+│  2. Sends real-time progress updates via port                       │
+│  3. Tracks completed/failed downloads                               │
+│  4. Supports retry of failed downloads                              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -169,7 +188,7 @@ Defines the extension using Manifest V3 format:
 
 - **`action`** — Configures the toolbar popup (`popup/popup.html`) and icons.
 - **`background.scripts`** — Registers `background.js` as the background script (Firefox). For Chrome compatibility, use `service_worker` instead or include both.
-- **`permissions`** — Declares `activeTab`, `downloads`, and `scripting` (see [Permissions](#permissions)).
+- **`permissions`** — Declares `activeTab`, `downloads`, `scripting`, and `storage` (see [Permissions](#permissions)).
 - **`browser_specific_settings.gecko`** — Provides a fixed extension ID and minimum Firefox version for Firefox compatibility.
 
 #### `content.js`
@@ -183,8 +202,9 @@ Injected into the active tab on demand (not declared in `content_scripts` in the
 | `getFileExtension(url)` | Extracts the file extension from a URL's pathname. Uses `URL` constructor for reliable parsing. Returns lowercase extension or `null`. |
 | `getFilename(url)` | Extracts the filename from the last path segment. Decodes URI components for display. |
 | `sanitizeFilename(name)` | Strips common download prefixes (e.g. Weebly's "Download file: ") and replaces characters invalid in filenames on Windows/macOS/Linux (`<>:"/\|?*`) with underscores. |
-| `getDisplayName(link, ext)` | Extracts a human-readable filename from link attributes (download, title, text content, aria-label) with URL filename as fallback. Appends extension if missing. All names are passed through `sanitizeFilename()`. |
-| `scanPage()` | Main scanner. Queries all `<a[href]>` elements, filters by supported extensions, deduplicates by full URL, and returns an array of file objects with display names. |
+| `getDisplayName(link, ext)` | Extracts a human-readable filename from link attributes (download, title, text content, aria-label) with URL filename as fallback. All names are passed through `sanitizeFilename()`. |
+| `deduplicateFilenames(files)` | Detects files with identical display names and appends a number suffix (e.g., `report (2).pdf`) to prevent overwrites. |
+| `scanPage()` | Main scanner. Queries all `<a[href]>` elements plus `<img>`, `<video>`, `<audio>`, and `<source>` tags. Filters by supported extensions, deduplicates by URL and filename, tags each file with its source ("link" or "media"). Small images (< 100px) are skipped. |
 
 **Message handling:**
 
@@ -192,11 +212,23 @@ Listens for `{ action: "scanPage" }` messages and returns a Promise with the sca
 
 #### `background.js`
 
-Runs as a background script (Firefox) or service worker (Chrome).
+Runs as a background script (Firefox) or service worker (Chrome). Manages a **download queue** with a concurrency limit of 3.
 
-**Message handling:**
+**Download queue:**
 
-Listens for `{ action: "download", files: [...] }` messages. Each file object contains `url` and `filename`. Filenames are sanitized (invalid characters replaced) before calling `browser.downloads.download()`. Returns a Promise that resolves with `{ completed, failed }` counts when all downloads complete.
+- Files are added to a queue and processed up to `MAX_CONCURRENT` (3) at a time.
+- Uses `downloads.onChanged` to track when each download completes or fails.
+- Sends real-time progress updates (`progress` messages) and a final `done` message via a port connection.
+- Supports `retry` action to re-queue all failed downloads.
+- Filenames are sanitized (invalid characters replaced) before calling `downloads.download()`.
+- Optional subfolder prefix is prepended to filenames.
+
+**Port communication:**
+
+Listens for port connections named `"downloads"`. Handles three actions:
+- `download` — Start a new batch of downloads
+- `retry` — Re-queue failed downloads from the current batch
+- `status` — Report current queue status
 
 #### `popup/popup.js`
 
@@ -205,19 +237,27 @@ The main UI controller. Manages:
 | Concern | Details |
 |---|---|
 | **Tab scanning** | Uses `chrome.tabs.query()` to get the active tab, then `chrome.scripting.executeScript()` to inject the content script, then `chrome.tabs.sendMessage()` to trigger scanning. |
-| **Rendering** | Groups files by file type (PDF, DOC, PPT, etc.) using the `CATEGORIES` mapping. Renders section headers with group-level checkboxes and individual file items with per-file checkboxes. |
-| **Filtering** | The search input triggers `renderFiles(filter)` on every keystroke, re-rendering only files whose filenames match the filter string (case-insensitive). |
-| **Selection** | Tracks selection state via DOM checkbox state. Group checkboxes use the `indeterminate` property for partial selection. Select All / Deselect All operate on all visible checkboxes. |
-| **Downloading** | Collects selected files (URL + display filename) and sends them to the background script. Files are saved with their display names. Shows a "Done!" confirmation for 2 seconds after completion. |
+| **Rendering** | Groups files by file type using the `CATEGORIES` mapping. Media-sourced files get a "media" tag. Renders section headers with group-level checkboxes. |
+| **Sorting** | Sort dropdown triggers re-render with files sorted alphabetically (A-Z or Z-A) within each group. Works in both flat and tree views. |
+| **Filtering** | The search input triggers `render(filter)` on every keystroke, showing only matching files (case-insensitive). |
+| **Selection** | Tracks selection via DOM checkbox state. Group checkboxes use `indeterminate` for partial selection. Select All / Deselect All operate on all visible checkboxes. |
+| **Type preferences** | Uses `storage.local` to remember which categories the user checks. Preferences are loaded on popup open and applied during rendering. |
+| **Downloading** | Opens a port to the background script, sends files with optional subfolder. Receives progress updates and displays a progress bar with status text. |
+| **Retry** | When downloads fail, a "Retry Failed" button appears. Clicking it sends a `retry` message to the background to re-queue failed files. |
+| **Copy URLs** | Copies selected file URLs as newline-separated text to the clipboard. |
+| **Badge** | Sets the file count on the extension toolbar icon using `action.setBadgeText()`. |
+| **Keyboard shortcuts** | `Ctrl+A` select all, `Ctrl+D` download, `/` focus search, `Escape` clear filter. |
 
 #### `popup/popup.css`
 
-Styles the popup at a fixed width of 380px with a max height of 500px (scrollable). Uses system font stack for native look. Key visual elements:
+Styles the popup at a fixed width of 400px with a max height of 520px (scrollable). Uses CSS custom properties for theming:
 
-- **Badge** — Blue pill showing file count.
-- **Search input** — Full-width with focus ring.
-- **Group headers** — Uppercase labels with checkboxes and bottom border.
-- **File items** — Flex row with checkbox, emoji icon, truncated filename, and extension badge.
+- **Light/dark mode** — Automatically switches via `prefers-color-scheme` media query with full variable-based theming.
+- **Badge** — Accent-colored pill showing file count.
+- **Search row** — Flex row with search input and sort dropdown.
+- **Progress bar** — Animated fill bar with status text and retry button.
+- **Source tag** — Small "MEDIA" label on files detected from embedded tags.
+- **File items** — Flex row with checkbox, emoji icon, truncated filename, optional source tag, and extension badge.
 
 ---
 
@@ -225,9 +265,10 @@ Styles the popup at a fixed width of 380px with a max height of 500px (scrollabl
 
 | Permission   | Why It's Needed |
 |---|---|
-| `activeTab`  | Allows the extension to access the content of the currently active tab when the user clicks the extension icon. Scoped to user-initiated action only — does not grant background access to all tabs. |
-| `downloads`  | Required to use the `chrome.downloads.download()` API to programmatically start file downloads. |
+| `activeTab`  | Allows the extension to access the content of the currently active tab when the user clicks the extension icon. Scoped to user-initiated action only. |
+| `downloads`  | Required to use the `chrome.downloads.download()` API to programmatically start file downloads and track their progress. |
 | `scripting`  | Required for the MV3 `chrome.scripting.executeScript()` API, used to inject the content script into the active tab on demand. |
+| `storage`    | Required to save and load user preferences (remembered file type selections) across sessions using `chrome.storage.local`. |
 
 > These are minimal permissions. The extension does **not** request `<all_urls>`, `tabs`, or any host permissions — it only accesses the current tab when the user explicitly clicks the icon.
 
@@ -281,8 +322,10 @@ const TYPE_ICONS = {
 ### Customizing the UI
 
 - **Popup dimensions** — Edit `body` width/max-height in `popup/popup.css`.
-- **Colors** — The primary color is `#2563eb` (blue-600). Search for this value in `popup.css` to change the accent color.
-- **Icons** — Replace the PNG files in `icons/` with your own. Sizes must be 16×16, 48×48, and 128×128 pixels.
+- **Colors** — The theme uses CSS custom properties defined in `:root`. Edit these to change the color scheme for both light and dark modes.
+- **Dark mode** — The `@media (prefers-color-scheme: dark)` block overrides the CSS variables. Edit these to customize the dark theme.
+- **Download concurrency** — Change `MAX_CONCURRENT` in `background.js` (default: 3).
+- **Icons** — Replace the PNG files in `icons/` with your own. Sizes must be 16x16, 48x48, and 128x128 pixels.
 
 ### Debugging
 
@@ -304,21 +347,22 @@ const TYPE_ICONS = {
 
 | Issue | Cause | Fix |
 |---|---|---|
-| Popup shows "No downloadable files found" | Page has no `<a>` tags with matching file extensions in `href` | Verify the page actually has direct file links. Dynamically loaded links or links behind JavaScript may not be detected. |
+| Popup shows "No downloadable files found" | Page has no `<a>` tags or media elements with matching file extensions | Verify the page actually has direct file links or embedded media. Dynamically loaded content may not be detected. |
 | "Cannot access contents of this page" | Extension lacks permission for the page (e.g., `chrome://` pages, browser internal pages) | `activeTab` only works on regular web pages. Browser-internal pages are restricted. |
-| Downloads don't start | Browser blocking downloads, missing `downloads` permission, or invalid characters in filename | Check the browser's download settings. Filenames are automatically sanitized (colons, quotes, etc. replaced), but if issues persist, check the browser console for errors. |
+| Downloads don't start | Browser blocking downloads, missing `downloads` permission, or invalid characters in filename | Filenames are automatically sanitized (colons, quotes, etc. replaced). Check the browser console for errors. |
 | Content script injection fails | Page uses strict CSP or is a protected page | Some pages (browser settings, extension pages, web store) block content script injection entirely. |
+| Too many small images detected | Page has many tiny UI images | Images smaller than 100x100px are automatically filtered out. If you still see unwanted images, use the search filter. |
 
 ---
 
 ## Limitations
 
-- **Only detects `<a>` tags** — The scanner looks for `<a href="...">` elements with file extensions in the URL path. It does not detect files loaded via JavaScript, embedded in iframes, or referenced in `<video>`/`<audio>`/`<img>` `src` attributes.
+- **Link and media detection only** — The scanner detects `<a href>` links and `<img>`, `<video>`, `<audio>`, `<source>` tags. It does not detect files loaded via JavaScript, referenced in CSS backgrounds, or embedded in iframes.
 - **Extension-based detection** — Files are identified by URL path extension only. URLs without extensions (e.g., download APIs like `/download?id=123`) are not detected.
-- **No download progress in popup** — Download progress is handled entirely by the browser's native download manager. The popup only shows initiation status.
-- **No subdirectory organization** — All downloads go to the browser's default download location. There is no option to choose a download folder or create subdirectories.
+- **No individual download progress** — The progress bar shows batch progress (how many files completed), not per-file byte progress.
 - **Protected pages** — Cannot scan `chrome://`, `about:`, `file://`, or extension pages due to browser security restrictions.
-- **Rate limiting** — Downloading many files simultaneously may trigger browser-level download throttling or prompts.
+- **Rate limiting** — Although the download queue limits concurrency to 3, some servers may still rate-limit requests.
+- **Preferences are per-browser** — Type preferences are stored in `storage.local` and do not sync across browsers or devices.
 
 ---
 

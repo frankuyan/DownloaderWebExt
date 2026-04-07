@@ -25,43 +25,58 @@ function getFilename(url) {
 }
 
 function sanitizeFilename(name) {
-  // Strip common download prefixes (e.g. Weebly's "Download file: ")
   name = name.replace(/^Download\s+file:\s*/i, "");
-  // Replace characters invalid in filenames on Windows/macOS/Linux
   name = name.replace(/[<>:"/\\|?*]/g, "_");
-  // Collapse multiple underscores/spaces
   name = name.replace(/_{2,}/g, "_").trim();
   return name;
 }
 
 function getDisplayName(link, ext) {
-  // 1. Check the download attribute (explicitly set for downloads)
   const dlAttr = link.getAttribute("download");
   if (dlAttr) return sanitizeFilename(dlAttr);
 
-  // 2. Check the title attribute
   const title = link.getAttribute("title");
   if (title && title.length > 1) {
     const clean = sanitizeFilename(title);
     return clean.includes(".") ? clean : `${clean}.${ext}`;
   }
 
-  // 3. Check link text content (ignore if it looks like a URL/UUID)
   const text = link.textContent.trim();
   if (text && text.length > 1 && !/^[0-9a-f-]{20,}/.test(text)) {
     const clean = sanitizeFilename(text);
     return clean.includes(".") ? clean : `${clean}.${ext}`;
   }
 
-  // 4. Check aria-label
   const aria = link.getAttribute("aria-label");
   if (aria && aria.length > 1) {
     const clean = sanitizeFilename(aria);
     return clean.includes(".") ? clean : `${clean}.${ext}`;
   }
 
-  // 5. Fall back to URL filename
   return getFilename(link.href) || `file.${ext}`;
+}
+
+function deduplicateFilenames(files) {
+  const nameCount = new Map();
+  for (const file of files) {
+    const key = file.filename.toLowerCase();
+    nameCount.set(key, (nameCount.get(key) || 0) + 1);
+  }
+
+  const nameIndex = new Map();
+  return files.map((file) => {
+    const key = file.filename.toLowerCase();
+    if (nameCount.get(key) <= 1) return file;
+
+    const idx = (nameIndex.get(key) || 0) + 1;
+    nameIndex.set(key, idx);
+    if (idx === 1) return file;
+
+    const dotIdx = file.filename.lastIndexOf(".");
+    const base = dotIdx > 0 ? file.filename.slice(0, dotIdx) : file.filename;
+    const extPart = dotIdx > 0 ? file.filename.slice(dotIdx) : "";
+    return { ...file, filename: `${base} (${idx})${extPart}` };
+  });
 }
 
 function isDirectoryListing() {
@@ -87,25 +102,64 @@ function isDirectoryListing() {
 }
 
 function scanPage() {
-  const links = document.querySelectorAll("a[href]");
   const seen = new Set();
   const files = [];
 
-  for (const link of links) {
+  // 1. Scan <a> links
+  for (const link of document.querySelectorAll("a[href]")) {
     const href = link.href;
     const ext = getFileExtension(href);
     if (ext && SUPPORTED_EXTENSIONS.includes(ext) && !seen.has(href)) {
       seen.add(href);
-      const displayName = getDisplayName(link, ext);
       files.push({
         url: href,
-        filename: displayName,
-        type: ext
+        filename: getDisplayName(link, ext),
+        type: ext,
+        source: "link"
       });
     }
   }
 
-  return { files, isDirectory: isDirectoryListing() };
+  // 2. Scan <img> tags (skip small icons/sprites)
+  for (const img of document.querySelectorAll("img[src]")) {
+    const src = img.src;
+    if (seen.has(src)) continue;
+    const ext = getFileExtension(src);
+    if (!ext || !SUPPORTED_EXTENSIONS.includes(ext)) continue;
+
+    const w = img.naturalWidth || parseInt(img.getAttribute("width")) || 0;
+    const h = img.naturalHeight || parseInt(img.getAttribute("height")) || 0;
+    if (w > 0 && h > 0 && w < 100 && h < 100) continue;
+
+    seen.add(src);
+    const name = img.alt || img.title || getFilename(src) || `image.${ext}`;
+    files.push({
+      url: src,
+      filename: sanitizeFilename(name.includes(".") ? name : `${name}.${ext}`),
+      type: ext,
+      source: "media"
+    });
+  }
+
+  // 3. Scan <video>/<audio> and <source> tags
+  for (const el of document.querySelectorAll("video[src], audio[src], video source[src], audio source[src]")) {
+    const src = el.src;
+    if (!src || seen.has(src)) continue;
+    const ext = getFileExtension(src);
+    if (!ext || !SUPPORTED_EXTENSIONS.includes(ext)) continue;
+
+    seen.add(src);
+    const parent = el.closest("video, audio");
+    const name = el.title || parent?.title || getFilename(src) || `media.${ext}`;
+    files.push({
+      url: src,
+      filename: sanitizeFilename(name.includes(".") ? name : `${name}.${ext}`),
+      type: ext,
+      source: "media"
+    });
+  }
+
+  return { files: deduplicateFilenames(files), isDirectory: isDirectoryListing() };
 }
 
 async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
@@ -147,14 +201,12 @@ async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
       continue;
     }
 
-    // Only follow same-origin links under the current directory
     if (resolved.origin !== base.origin) continue;
     if (!resolved.pathname.startsWith(base.pathname)) continue;
 
     const ext = getFileExtension(resolved.href);
 
     if (href.endsWith("/") && !ext) {
-      // It's a subdirectory
       if (!visited.has(resolved.href)) {
         const dirName = decodeURIComponent(href.replace(/\/$/, ""));
         subdirs.push({ url: resolved.href, name: dirName });
@@ -170,7 +222,6 @@ async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
     }
   }
 
-  // Recursively scan subdirectories
   for (const sub of subdirs) {
     if (port) {
       port.postMessage({ type: "progress", url: sub.url, name: sub.name, depth });

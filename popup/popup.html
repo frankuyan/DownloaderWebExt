@@ -10,12 +10,37 @@
     <span id="badge" class="badge hidden">0</span>
   </div>
 
-  <input type="text" id="search" placeholder="Filter files..." class="search-input">
+  <div class="search-row">
+    <input type="text" id="search" placeholder="Filter files...  ( / )" class="search-input">
+    <select id="sortSelect" class="sort-select" title="Sort files">
+      <option value="default">Default</option>
+      <option value="name-asc">A &rarr; Z</option>
+      <option value="name-desc">Z &rarr; A</option>
+    </select>
+  </div>
 
   <div class="toolbar">
     <button id="selectAll">Select All</button>
     <button id="deselectAll">Deselect All</button>
+    <button id="copyUrls" title="Copy selected file URLs to clipboard">Copy URLs</button>
     <button id="downloadBtn" class="primary" disabled>Download Selected</button>
+  </div>
+
+  <div class="options-row">
+    <label class="subfolder-label" title="Download files into a subfolder within your default download directory">
+      Save to subfolder:
+      <input type="text" id="subfolder" placeholder="optional" class="subfolder-input">
+    </label>
+  </div>
+
+  <div id="downloadProgress" class="download-progress hidden">
+    <div class="progress-bar-track">
+      <div id="progressBar" class="progress-bar-fill"></div>
+    </div>
+    <div class="progress-info">
+      <span id="progressText" class="progress-text"></span>
+      <button id="retryBtn" class="retry-btn hidden">Retry Failed</button>
+    </div>
   </div>
 
   <div id="scanDirBar" class="scan-dir-bar hidden">
