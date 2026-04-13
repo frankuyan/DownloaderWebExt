@@ -162,13 +162,27 @@ function scanPage() {
   return { files: deduplicateFilenames(files), isDirectory: isDirectoryListing() };
 }
 
+const MAX_DIRS = 200;
+const FETCH_TIMEOUT_MS = 15000;
+
+async function fetchWithTimeout(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
   if (depth > maxDepth || visited.has(url)) return null;
+  if (visited.size >= MAX_DIRS) return null;
   visited.add(url);
 
   let html;
   try {
-    const resp = await fetch(url);
+    const resp = await fetchWithTimeout(url);
     if (!resp.ok) return null;
     html = await resp.text();
   } catch {
@@ -235,24 +249,27 @@ async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
   return node;
 }
 
-// Use browser namespace if available, fall back to chrome
 const api = typeof browser !== "undefined" ? browser : chrome;
 
-api.runtime.onMessage.addListener((message, _sender) => {
-  if (message.action === "scanPage") {
-    return Promise.resolve(scanPage());
-  }
-});
+if (!window.__fileDownloaderInjected) {
+  window.__fileDownloaderInjected = true;
 
-api.runtime.onConnect.addListener((port) => {
-  if (port.name !== "directoryScan") return;
-
-  port.onMessage.addListener(async (message) => {
-    if (message.action === "scanDirectory") {
-      const maxDepth = message.maxDepth || 5;
-      const visited = new Set();
-      const tree = await scanDirectory(location.href, null, 0, maxDepth, visited, port);
-      port.postMessage({ type: "done", tree });
+  api.runtime.onMessage.addListener((message, _sender) => {
+    if (message.action === "scanPage") {
+      return Promise.resolve(scanPage());
     }
   });
-});
+
+  api.runtime.onConnect.addListener((port) => {
+    if (port.name !== "directoryScan") return;
+
+    port.onMessage.addListener(async (message) => {
+      if (message.action === "scanDirectory") {
+        const maxDepth = message.maxDepth || 5;
+        const visited = new Set();
+        const tree = await scanDirectory(location.href, null, 0, maxDepth, visited, port);
+        port.postMessage({ type: "done", tree, truncated: visited.size >= MAX_DIRS });
+      }
+    });
+  });
+}

@@ -290,6 +290,25 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 
 ## Development
 
+### Building for Submission
+
+A shell script in `scripts/` produces a zip suitable for upload to the Chrome Web Store or Firefox AMO:
+
+```
+npm run package
+# or
+bash scripts/package.sh
+```
+
+The output is written to `dist/file-downloader-<version>.zip`. The zip includes `manifest.json`, `background.js`, `content.js`, `popup/`, `icons/`, and `LICENSE`; dev files (`dist/`, `scripts/`, `USERGUIDE.md`, `CHANGELOG.md`, dotfiles) are excluded.
+
+To cut a release:
+
+1. Update `version` in `manifest.json` and `package.json` (keep them in sync).
+2. Add an entry to `CHANGELOG.md`.
+3. Run `npm run package`.
+4. Upload the zip to the [Chrome Web Store Dashboard](https://chrome.google.com/webstore/devconsole) or [Firefox AMO](https://addons.mozilla.org/developers/).
+
 ### Modifying Supported File Types
 
 File extensions are defined in two places:
@@ -368,4 +387,4 @@ const TYPE_ICONS = {
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

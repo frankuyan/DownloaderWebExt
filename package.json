@@ -1,0 +1,10 @@
+{
+  "name": "file-downloader-webext",
+  "version": "1.2.0",
+  "description": "Cross-browser (Chrome MV3, Firefox) extension that scans pages for downloadable files and bulk-downloads them.",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "package": "bash scripts/package.sh"
+  }
+}

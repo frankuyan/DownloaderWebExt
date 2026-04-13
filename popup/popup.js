@@ -333,11 +333,16 @@ function renderTreeNode(node, depth, filter) {
 
   container.appendChild(childrenContainer);
 
-  toggle.addEventListener("click", (e) => {
-    e.stopPropagation();
+  const toggleExpand = () => {
     const isCollapsed = childrenContainer.classList.toggle("collapsed");
     toggle.classList.toggle("collapsed", isCollapsed);
     dirIcon.textContent = isCollapsed ? "\u{1F4C1}" : "\u{1F4C2}";
+  };
+
+  dirRow.addEventListener("click", (e) => {
+    if (e.target === dirCb) return;
+    e.stopPropagation();
+    toggleExpand();
   });
 
   dirCb.addEventListener("change", () => {
@@ -387,9 +392,11 @@ function connectDownloadPort() {
     else if (msg.type === "done") showDownloadDone(msg);
   });
   downloadPort.onDisconnect.addListener(() => { downloadPort = null; });
+  downloadPort.postMessage({ action: "status" });
 }
 
 function showProgress({ completed, failed, active, queued, total }) {
+  if (total === 0) return;
   progressContainer.classList.remove("hidden");
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   progressBar.style.width = `${pct}%`;
@@ -427,12 +434,16 @@ async function scanActiveTab() {
     const [tab] = await api.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab.id;
 
-    await api.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["/content.js"]
-    });
-
-    const response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
+    let response;
+    try {
+      response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
+    } catch {
+      await api.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["/content.js"]
+      });
+      response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
+    }
     allFiles = response?.files || response || [];
     const isDirectory = response?.isDirectory || false;
 
@@ -507,7 +518,11 @@ function startDirectoryScan() {
 // --- Event Listeners ---
 
 // Search & sort
-searchEl.addEventListener("input", () => render(searchEl.value));
+let searchTimer = null;
+searchEl.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => render(searchEl.value), 120);
+});
 sortSelect.addEventListener("change", () => render(searchEl.value));
 
 // Directory scan
@@ -574,7 +589,10 @@ copyUrlsBtn.addEventListener("click", () => {
   navigator.clipboard.writeText(urls).then(() => {
     copyUrlsBtn.textContent = "Copied!";
     setTimeout(() => { copyUrlsBtn.textContent = "Copy URLs"; }, 1500);
-  }).catch(() => {});
+  }).catch(() => {
+    copyUrlsBtn.textContent = "Copy failed";
+    setTimeout(() => { copyUrlsBtn.textContent = "Copy URLs"; }, 2000);
+  });
 });
 
 // Keyboard shortcuts
@@ -611,4 +629,5 @@ document.addEventListener("keydown", (e) => {
 });
 
 // --- Init ---
+connectDownloadPort();
 scanActiveTab();
