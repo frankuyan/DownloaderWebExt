@@ -5,6 +5,8 @@
   "private": true,
   "license": "MIT",
   "scripts": {
+    "test": "node scripts/smoke-tests.js",
+    "validate": "bash scripts/validate.sh",
     "package": "bash scripts/package.sh"
   }
 }

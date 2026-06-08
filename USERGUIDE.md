@@ -53,7 +53,7 @@ A comprehensive guide to installing, using, and getting the most out of the File
 1. Open Firefox and navigate to `about:debugging`.
 2. Click **This Firefox** in the left sidebar.
 3. Click **Load Temporary Add-on...**.
-4. Navigate to the `DownloaderWebExt` folder and select the `manifest.json` file.
+4. Run `npm run package`, unzip `dist/file-downloader-firefox-<version>.zip`, and select that build's `manifest.json` file.
 5. The extension icon will appear in your toolbar.
 
 > **Important:** Temporary add-ons in Firefox are removed when the browser is closed. To install permanently, the extension must be signed and distributed through [addons.mozilla.org](https://addons.mozilla.org).

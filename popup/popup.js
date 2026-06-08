@@ -95,6 +95,14 @@ function sortFileList(files) {
   return files;
 }
 
+function decodePath(path) {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
 // --- Type Preferences (storage API) ---
 async function loadPreferences() {
   try {
@@ -227,6 +235,15 @@ function nodeMatchesFilter(node, filter) {
   return node.children.some((child) => nodeMatchesFilter(child, filter));
 }
 
+function getTreeDownloadPath(node) {
+  if (!treeData?.path || !node.path) return node.name;
+
+  const rootPath = treeData.path.endsWith("/") ? treeData.path : `${treeData.path}/`;
+  if (!node.path.startsWith(rootPath)) return node.name;
+
+  return decodePath(node.path.slice(rootPath.length)) || node.name;
+}
+
 function updateDirCheckbox(dirEl) {
   const fileCheckboxes = dirEl.querySelectorAll(".file-checkbox");
   const dirCb = dirEl.querySelector(":scope > .dir-node > .dir-checkbox");
@@ -258,7 +275,7 @@ function renderTreeNode(node, depth, filter) {
     cb.type = "checkbox";
     cb.className = "file-checkbox";
     cb.dataset.url = node.url;
-    cb.dataset.filename = node.name;
+    cb.dataset.filename = getTreeDownloadPath(node);
     cb.addEventListener("change", () => {
       updateAncestorCheckboxes(cb);
       updateDownloadBtn();
@@ -373,6 +390,7 @@ function renderTree(filter = "") {
   } else {
     emptyEl.classList.remove("hidden");
   }
+  updateDownloadBtn();
 }
 
 function render(filter) {
@@ -459,6 +477,10 @@ async function scanActiveTab() {
     badgeEl.textContent = allFiles.length;
     badgeEl.classList.remove("hidden");
     setBadge(allFiles.length);
+  } else {
+    badgeEl.textContent = "0";
+    badgeEl.classList.add("hidden");
+    setBadge(0);
   }
 
   await loadPreferences();
@@ -474,11 +496,12 @@ function startDirectoryScan() {
   scanStatus.textContent = "Starting scan...";
 
   let dirCount = 0;
+  let scanFinished = false;
 
   const port = api.tabs.connect(activeTabId, { name: "directoryScan" });
 
   port.onDisconnect.addListener(() => {
-    if (scanDirBtn.disabled) {
+    if (!scanFinished) {
       scanDirBtn.textContent = "Scan Subdirectories";
       scanDirBtn.disabled = false;
       scanStatus.textContent = "Scan interrupted. Try again.";
@@ -490,8 +513,10 @@ function startDirectoryScan() {
       dirCount++;
       scanStatus.textContent = `Scanning... (${dirCount} directories explored)`;
     } else if (msg.type === "done") {
+      scanFinished = true;
       treeData = msg.tree;
       isTreeMode = true;
+      const truncatedText = msg.truncated ? " (limit reached)" : "";
 
       if (treeData) {
         const total = countFiles(treeData);
@@ -500,11 +525,11 @@ function startDirectoryScan() {
         setBadge(total);
         scanDirBtn.textContent = "Rescan";
         scanDirBtn.disabled = false;
-        scanStatus.textContent = `Found ${total} files in ${dirCount + 1} directories`;
+        scanStatus.textContent = `Found ${total} files in ${dirCount + 1} directories${truncatedText}`;
       } else {
         scanDirBtn.textContent = "Scan Subdirectories";
         scanDirBtn.disabled = false;
-        scanStatus.textContent = "No files found in subdirectories.";
+        scanStatus.textContent = `No files found in subdirectories.${truncatedText}`;
       }
 
       render(searchEl.value);

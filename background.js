@@ -3,16 +3,26 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 const MAX_CONCURRENT = 3;
 const STATE_KEY = "downloadState";
 
-function sanitizeFilename(name) {
-  return name
+function sanitizePathSegment(segment) {
+  return String(segment ?? "")
     .replace(/^Download\s+file:\s*/i, "")
-    .replace(/[<>:"/\\|?*]/g, "_")
+    .replace(/[<>:"\\|?*\x00-\x1F]/g, "_")
     .replace(/_{2,}/g, "_")
-    .trim();
+    .trim()
+    .replace(/^\.+$/, "");
+}
+
+function sanitizeDownloadPath(path, fallback = "download") {
+  const parts = String(path ?? "")
+    .split(/[\\/]+/)
+    .map(sanitizePathSegment)
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join("/") : fallback;
 }
 
 let queue = [];
 let active = new Map();
+let starting = 0;
 let completed = [];
 let failed = [];
 let totalInBatch = 0;
@@ -51,7 +61,7 @@ function sendProgress() {
   notify({
     type: "progress",
     queued: queue.length,
-    active: active.size,
+    active: active.size + starting,
     completed: completed.length,
     failed: failed.length,
     total: totalInBatch
@@ -59,12 +69,13 @@ function sendProgress() {
 }
 
 function processQueue() {
-  while (active.size < MAX_CONCURRENT && queue.length > 0) {
+  while (active.size + starting < MAX_CONCURRENT && queue.length > 0) {
+    starting += 1;
     startDownload(queue.shift());
   }
   saveState();
   sendProgress();
-  if (active.size === 0 && queue.length === 0 && totalInBatch > 0) {
+  if (starting === 0 && active.size === 0 && queue.length === 0 && totalInBatch > 0) {
     notify({
       type: "done",
       completed: completed.length,
@@ -75,15 +86,18 @@ function processQueue() {
 
 async function startDownload(file) {
   try {
-    let filename = sanitizeFilename(file.filename);
+    let filename = sanitizeDownloadPath(file.filename);
     if (file.subfolder) {
-      filename = `${sanitizeFilename(file.subfolder)}/${filename}`;
+      const subfolder = sanitizeDownloadPath(file.subfolder, "");
+      if (subfolder) filename = `${subfolder}/${filename}`;
     }
     const id = await api.downloads.download({ url: file.url, filename });
     active.set(id, file);
     saveState();
   } catch {
     failed.push(file);
+  } finally {
+    starting = Math.max(0, starting - 1);
     processQueue();
   }
 }
@@ -122,12 +136,12 @@ api.runtime.onConnect.addListener((port) => {
     } else if (msg.action === "retry") {
       const toRetry = [...failed];
       failed = [];
-      totalInBatch = completed.length + toRetry.length + active.size + queue.length;
+      totalInBatch = completed.length + toRetry.length + active.size + starting + queue.length;
       queue.push(...toRetry);
       processQueue();
     } else if (msg.action === "status") {
       sendProgress();
-      if (totalInBatch > 0 && active.size === 0 && queue.length === 0) {
+      if (totalInBatch > 0 && starting === 0 && active.size === 0 && queue.length === 0) {
         notify({
           type: "done",
           completed: completed.length,

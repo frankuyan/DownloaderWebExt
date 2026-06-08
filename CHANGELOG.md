@@ -4,11 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Download queue now reserves slots while new downloads are starting, so the
+  configured concurrency limit is enforced.
+- Tree-view downloads preserve relative directory paths while sanitizing path
+  segments before calling the downloads API.
+- Content-script scan responses now use `sendResponse` for cross-browser
+  runtime messaging compatibility.
+- Directory scanning now normalizes directory prefixes and fragments before
+  crawling, avoiding sibling-path matches.
+- Popup badge state is cleared when a scan finds no files.
+
+### Changed
+- Chrome and Firefox packages now use separate manifests so each browser gets
+  the correct MV3 background declaration.
+- Chrome package manifest no longer includes Firefox-specific Gecko metadata.
+- Added `npm run validate` and `npm test` for manifest checks, JavaScript syntax
+  checks, and dependency-free smoke tests.
+
 ## [1.2.0] - 2026-04-12
 
 ### Fixed
-- Chrome MV3 compatibility: declared `service_worker` in `background` manifest
-  alongside `scripts` for Firefox fallback.
+- Chrome MV3 compatibility: declared `service_worker` in `background` manifest.
 - Duplicate listener registration in `content.js` when the popup reopens and
   re-injects the content script.
 - In-flight batch state persists across service-worker termination via

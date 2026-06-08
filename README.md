@@ -87,7 +87,7 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 1. Open `about:debugging` in Firefox.
 2. Click **This Firefox** in the left sidebar.
 3. Click **Load Temporary Add-on**.
-4. Navigate to the `DownloaderWebExt` folder and select `manifest.json`.
+4. Run `npm run package`, unzip `dist/file-downloader-firefox-<version>.zip`, and select that build's `manifest.json`.
 5. The extension icon appears in the toolbar.
 
 > **Note:** Temporary add-ons in Firefox are removed when the browser closes. For permanent installation, the extension must be signed and distributed through [addons.mozilla.org](https://addons.mozilla.org).
@@ -115,7 +115,8 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 
 ```
 DownloaderWebExt/
-├── manifest.json          # Extension manifest (MV3, cross-browser)
+├── manifest.json          # Chrome MV3 manifest
+├── manifest.firefox.json  # Firefox MV3 manifest used during packaging
 ├── content.js             # Content script — scans page for file links and media
 ├── background.js          # Background script — queued download manager
 ├── popup/
@@ -126,6 +127,11 @@ DownloaderWebExt/
 │   ├── icon-16.png        # Toolbar icon (16x16)
 │   ├── icon-48.png        # Extension management icon (48x48)
 │   └── icon-128.png       # Chrome Web Store / large icon (128x128)
+├── scripts/
+│   ├── package.sh         # Builds Chrome and Firefox submission zips
+│   ├── validate.sh        # Runs manifest, syntax, and smoke-test checks
+│   ├── validate.js        # Manifest and required-file validation
+│   └── smoke-tests.js     # Dependency-free runtime smoke tests
 └── README.md              # This file
 ```
 
@@ -184,12 +190,13 @@ DownloaderWebExt/
 
 #### `manifest.json`
 
-Defines the extension using Manifest V3 format:
+Defines the Chrome MV3 extension:
 
 - **`action`** — Configures the toolbar popup (`popup/popup.html`) and icons.
-- **`background.scripts`** — Registers `background.js` as the background script (Firefox). For Chrome compatibility, use `service_worker` instead or include both.
+- **`background.service_worker`** — Registers `background.js` as the Chrome MV3 service worker.
 - **`permissions`** — Declares `activeTab`, `downloads`, `scripting`, and `storage` (see [Permissions](#permissions)).
-- **`browser_specific_settings.gecko`** — Provides a fixed extension ID and minimum Firefox version for Firefox compatibility.
+
+`manifest.firefox.json` uses Firefox's `background.scripts` form and carries the Gecko add-on ID. `scripts/package.sh` copies it into the Firefox build as `manifest.json`.
 
 #### `content.js`
 
@@ -208,7 +215,7 @@ Injected into the active tab on demand (not declared in `content_scripts` in the
 
 **Message handling:**
 
-Listens for `{ action: "scanPage" }` messages and returns a Promise with the scan results (Firefox-compatible).
+Listens for `{ action: "scanPage" }` messages and responds with scan results using `sendResponse`, which works across Chrome and Firefox.
 
 #### `background.js`
 
@@ -284,15 +291,29 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 
 - **Chrome** — Uses the `chrome.*` namespace natively.
 - **Firefox** — Provides the `browser.*` namespace with Promise-based APIs. The fallback ensures compatibility in either environment.
-- **Manifest** — The `browser_specific_settings.gecko` block in `manifest.json` provides Firefox with a fixed add-on ID and minimum version requirement (109+, when MV3 support was added).
+- **Manifest** — Chrome and Firefox use different background declarations, so the repo keeps `manifest.json` for Chrome and `manifest.firefox.json` for Firefox packaging.
 
 ---
 
 ## Development
 
+### Validation and Tests
+
+Run validation before packaging:
+
+```
+npm run validate
+```
+
+This checks both manifests, runs JavaScript syntax checks, and executes dependency-free smoke tests for queue concurrency and filename/path helpers. The smoke tests can also be run directly:
+
+```
+npm test
+```
+
 ### Building for Submission
 
-A shell script in `scripts/` produces a zip suitable for upload to the Chrome Web Store or Firefox AMO:
+A shell script in `scripts/` produces separate packages for the Chrome Web Store and Firefox AMO:
 
 ```
 npm run package
@@ -300,14 +321,15 @@ npm run package
 bash scripts/package.sh
 ```
 
-The output is written to `dist/file-downloader-<version>.zip`. The zip includes `manifest.json`, `background.js`, `content.js`, `popup/`, `icons/`, and `LICENSE`; dev files (`dist/`, `scripts/`, `USERGUIDE.md`, `CHANGELOG.md`, dotfiles) are excluded.
+The outputs are written to `dist/file-downloader-chrome-<version>.zip` and `dist/file-downloader-firefox-<version>.zip`. Each package includes `manifest.json`, `background.js`, `content.js`, `popup/`, `icons/`, and `LICENSE`; dev files (`dist/`, `scripts/`, `USERGUIDE.md`, `CHANGELOG.md`, dotfiles) are excluded.
 
 To cut a release:
 
-1. Update `version` in `manifest.json` and `package.json` (keep them in sync).
+1. Update `version` in `manifest.json`, `manifest.firefox.json`, and `package.json` (keep them in sync).
 2. Add an entry to `CHANGELOG.md`.
-3. Run `npm run package`.
-4. Upload the zip to the [Chrome Web Store Dashboard](https://chrome.google.com/webstore/devconsole) or [Firefox AMO](https://addons.mozilla.org/developers/).
+3. Run `npm run validate`.
+4. Run `npm run package`.
+5. Upload the matching zip to the [Chrome Web Store Dashboard](https://chrome.google.com/webstore/devconsole) or [Firefox AMO](https://addons.mozilla.org/developers/).
 
 ### Modifying Supported File Types
 

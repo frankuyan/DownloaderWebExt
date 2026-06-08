@@ -24,36 +24,56 @@ function getFilename(url) {
   }
 }
 
+function safeDecode(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
 function sanitizeFilename(name) {
-  name = name.replace(/^Download\s+file:\s*/i, "");
-  name = name.replace(/[<>:"/\\|?*]/g, "_");
-  name = name.replace(/_{2,}/g, "_").trim();
-  return name;
+  const clean = String(name ?? "")
+    .replace(/^Download\s+file:\s*/i, "")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .replace(/_{2,}/g, "_")
+    .trim()
+    .replace(/^\.+$/, "");
+  return clean || "download";
+}
+
+function hasSupportedExtension(filename) {
+  const match = filename.match(/\.([a-z0-9]+)$/i);
+  return Boolean(match && SUPPORTED_EXTENSIONS.includes(match[1].toLowerCase()));
+}
+
+function ensureExtension(filename, ext) {
+  return hasSupportedExtension(filename) ? filename : `${filename}.${ext}`;
 }
 
 function getDisplayName(link, ext) {
   const dlAttr = link.getAttribute("download");
-  if (dlAttr) return sanitizeFilename(dlAttr);
+  if (dlAttr) return ensureExtension(sanitizeFilename(dlAttr), ext);
 
   const title = link.getAttribute("title");
   if (title && title.length > 1) {
     const clean = sanitizeFilename(title);
-    return clean.includes(".") ? clean : `${clean}.${ext}`;
+    return ensureExtension(clean, ext);
   }
 
   const text = link.textContent.trim();
   if (text && text.length > 1 && !/^[0-9a-f-]{20,}/.test(text)) {
     const clean = sanitizeFilename(text);
-    return clean.includes(".") ? clean : `${clean}.${ext}`;
+    return ensureExtension(clean, ext);
   }
 
   const aria = link.getAttribute("aria-label");
   if (aria && aria.length > 1) {
     const clean = sanitizeFilename(aria);
-    return clean.includes(".") ? clean : `${clean}.${ext}`;
+    return ensureExtension(clean, ext);
   }
 
-  return getFilename(link.href) || `file.${ext}`;
+  return ensureExtension(sanitizeFilename(getFilename(link.href) || "file"), ext);
 }
 
 function deduplicateFilenames(files) {
@@ -135,7 +155,7 @@ function scanPage() {
     const name = img.alt || img.title || getFilename(src) || `image.${ext}`;
     files.push({
       url: src,
-      filename: sanitizeFilename(name.includes(".") ? name : `${name}.${ext}`),
+      filename: ensureExtension(sanitizeFilename(name), ext),
       type: ext,
       source: "media"
     });
@@ -153,7 +173,7 @@ function scanPage() {
     const name = el.title || parent?.title || getFilename(src) || `media.${ext}`;
     files.push({
       url: src,
-      filename: sanitizeFilename(name.includes(".") ? name : `${name}.${ext}`),
+      filename: ensureExtension(sanitizeFilename(name), ext),
       type: ext,
       source: "media"
     });
@@ -164,6 +184,16 @@ function scanPage() {
 
 const MAX_DIRS = 200;
 const FETCH_TIMEOUT_MS = 15000;
+
+function normalizeDirectoryUrl(url) {
+  const normalized = new URL(url);
+  normalized.hash = "";
+  return normalized.href;
+}
+
+function getDirectoryPrefix(pathname) {
+  return pathname.endsWith("/") ? pathname : `${pathname}/`;
+}
 
 async function fetchWithTimeout(url) {
   const controller = new AbortController();
@@ -176,6 +206,7 @@ async function fetchWithTimeout(url) {
 }
 
 async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
+  url = normalizeDirectoryUrl(url);
   if (depth > maxDepth || visited.has(url)) return null;
   if (visited.size >= MAX_DIRS) return null;
   visited.add(url);
@@ -193,10 +224,11 @@ async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
   const doc = parser.parseFromString(html, "text/html");
   const links = doc.querySelectorAll("a[href]");
   const base = new URL(url);
+  const basePrefix = getDirectoryPrefix(base.pathname);
 
   const node = {
     name: basePath || base.pathname.split("/").filter(Boolean).pop() || "/",
-    path: base.pathname,
+    path: basePrefix,
     type: "dir",
     url: url,
     children: []
@@ -215,19 +247,22 @@ async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
       continue;
     }
 
+    resolved.hash = "";
+
     if (resolved.origin !== base.origin) continue;
-    if (!resolved.pathname.startsWith(base.pathname)) continue;
+    if (!resolved.pathname.startsWith(basePrefix)) continue;
 
     const ext = getFileExtension(resolved.href);
 
-    if (href.endsWith("/") && !ext) {
+    if (resolved.pathname.endsWith("/") && !ext) {
       if (!visited.has(resolved.href)) {
-        const dirName = decodeURIComponent(href.replace(/\/$/, ""));
+        const dirName = safeDecode(resolved.pathname.split("/").filter(Boolean).pop() || "/");
         subdirs.push({ url: resolved.href, name: dirName });
       }
     } else if (ext && SUPPORTED_EXTENSIONS.includes(ext)) {
+      const filename = ensureExtension(sanitizeFilename(getFilename(resolved.href) || "file"), ext);
       node.children.push({
-        name: getFilename(resolved.href) || `file.${ext}`,
+        name: filename,
         path: resolved.pathname,
         type: "file",
         url: resolved.href,
@@ -254,10 +289,12 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 if (!window.__fileDownloaderInjected) {
   window.__fileDownloaderInjected = true;
 
-  api.runtime.onMessage.addListener((message, _sender) => {
+  api.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === "scanPage") {
-      return Promise.resolve(scanPage());
+      sendResponse(scanPage());
+      return true;
     }
+    return false;
   });
 
   api.runtime.onConnect.addListener((port) => {
