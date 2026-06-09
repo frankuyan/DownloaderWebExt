@@ -224,6 +224,7 @@ Runs as a background script (Firefox) or service worker (Chrome). Manages a **do
 **Download queue:**
 
 - Files are added to a queue and processed up to `MAX_CONCURRENT` (3) at a time.
+- If more files are sent while a batch is still running, they are appended to the existing queue and counted in the same batch.
 - Uses `downloads.onChanged` to track when each download completes or fails.
 - Sends real-time progress updates (`progress` messages) and a final `done` message via a port connection.
 - Supports `retry` action to re-queue all failed downloads.
@@ -233,7 +234,7 @@ Runs as a background script (Firefox) or service worker (Chrome). Manages a **do
 **Port communication:**
 
 Listens for port connections named `"downloads"`. Handles three actions:
-- `download` — Start a new batch of downloads
+- `download` — Start a new batch, or append files when a batch is already running
 - `retry` — Re-queue failed downloads from the current batch
 - `status` — Report current queue status
 

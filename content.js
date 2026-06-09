@@ -188,7 +188,15 @@ const FETCH_TIMEOUT_MS = 15000;
 function normalizeDirectoryUrl(url) {
   const normalized = new URL(url);
   normalized.hash = "";
+  if (!normalized.pathname.endsWith("/") && !hasPathExtension(normalized.pathname)) {
+    normalized.pathname = `${normalized.pathname}/`;
+  }
   return normalized.href;
+}
+
+function hasPathExtension(pathname) {
+  const lastSegment = pathname.split("/").pop() || "";
+  return /\.[^/.]+$/.test(lastSegment);
 }
 
 function getDirectoryPrefix(pathname) {

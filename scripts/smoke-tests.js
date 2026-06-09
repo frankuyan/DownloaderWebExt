@@ -97,6 +97,43 @@ async function testBackgroundConcurrency() {
   assert(started.length === 4, `Expected one replacement download after completion, got ${started.length}`);
 }
 
+async function testBackgroundAppendsDownloadsWhileBusy() {
+  const { port, started, messages, changedListener } = runBackground();
+
+  port.onMessage.listener({
+    action: "download",
+    files: Array.from({ length: 4 }, (_, i) => ({
+      url: `https://example.test/original-${i}.txt`,
+      filename: `original-${i}.txt`
+    }))
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert(started.length === 3, `Expected initial batch to start 3 downloads, got ${started.length}`);
+
+  port.onMessage.listener({
+    action: "download",
+    files: Array.from({ length: 2 }, (_, i) => ({
+      url: `https://example.test/added-${i}.txt`,
+      filename: `added-${i}.txt`
+    }))
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert(started.length === 3, `Expected appended files to wait for an open slot, got ${started.length} starts`);
+  assert(messages.some((msg) => msg.type === "progress" && msg.total === 6), "Appended files should increase the active batch total");
+
+  await changedListener()({ id: 1, state: { current: "complete" } });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert(started.length === 4, `Expected original queued file to start first, got ${started.length} starts`);
+  assert(started[3].file.filename === "original-3.txt", "Existing queue order should be preserved before appended files");
+
+  await changedListener()({ id: 2, state: { current: "complete" } });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert(started.length === 5, `Expected first appended file to start after original queue, got ${started.length} starts`);
+  assert(started[4].file.filename === "added-0.txt", "Appended files should start after the existing queue");
+}
+
 function testBackgroundPathSanitization() {
   const { context } = runBackground({ storage: {} });
 
@@ -142,6 +179,8 @@ function testContentHelpers() {
   assert(context.ensureExtension("report.PDF", "pdf") === "report.PDF", "Supported extensions should be preserved");
   assert(context.getDirectoryPrefix("/files") === "/files/", "Directory prefixes should be normalized with a trailing slash");
   assert(context.normalizeDirectoryUrl("https://example.test/files/#top") === "https://example.test/files/", "Directory URLs should drop fragments");
+  assert(context.normalizeDirectoryUrl("https://example.test/files#top") === "https://example.test/files/", "Directory-like URLs should gain a trailing slash");
+  assert(context.normalizeDirectoryUrl("https://example.test/index.html#top") === "https://example.test/index.html", "File-like URLs should not gain a trailing slash");
   assert(typeof messageListener === "function", "Content script should register a message listener");
 }
 
@@ -149,6 +188,7 @@ async function main() {
   testBackgroundPathSanitization();
   testContentHelpers();
   await testBackgroundConcurrency();
+  await testBackgroundAppendsDownloadsWhileBusy();
   console.log("Smoke tests passed.");
 }
 

@@ -15,7 +15,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runtime messaging compatibility.
 - Directory scanning now normalizes directory prefixes and fragments before
   crawling, avoiding sibling-path matches.
+- Directory scanning now treats extensionless listing URLs without a trailing
+  slash as directories before resolving child links.
 - Popup badge state is cleared when a scan finds no files.
+- Download requests received while a batch is active are appended to the
+  current queue instead of resetting batch accounting.
 
 ### Changed
 - Chrome and Firefox packages now use separate manifests so each browser gets

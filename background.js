@@ -68,6 +68,10 @@ function sendProgress() {
   });
 }
 
+function hasPendingDownloads() {
+  return starting > 0 || active.size > 0 || queue.length > 0;
+}
+
 function processQueue() {
   while (active.size + starting < MAX_CONCURRENT && queue.length > 0) {
     starting += 1;
@@ -128,10 +132,21 @@ api.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener(async (msg) => {
     await loadPromise;
     if (msg.action === "download") {
-      completed = [];
-      failed = [];
-      queue = [...msg.files];
-      totalInBatch = queue.length;
+      const files = Array.isArray(msg.files) ? msg.files : [];
+      if (files.length === 0) {
+        sendProgress();
+        return;
+      }
+
+      if (hasPendingDownloads()) {
+        queue.push(...files);
+        totalInBatch += files.length;
+      } else {
+        completed = [];
+        failed = [];
+        queue = [...files];
+        totalInBatch = queue.length;
+      }
       processQueue();
     } else if (msg.action === "retry") {
       const toRetry = [...failed];

@@ -157,6 +157,7 @@ Sorting works in both flat and tree views. In tree view, files within each direc
 3. Click the button (or press `Ctrl+D` / `Cmd+D`) to begin downloading.
 4. A **progress bar** appears showing real-time download status.
 5. Downloads are processed in a queue — up to 3 files download simultaneously. This prevents browser throttling that occurs when many downloads start at once.
+6. If you add more files while downloads are still running, they are appended to the current queue and start after earlier queued files.
 
 **Where do files go?** All files are saved to your browser's default download location (or a subfolder if specified). You can check and change this in your browser settings:
 
