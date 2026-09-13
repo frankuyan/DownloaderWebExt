@@ -32,13 +32,28 @@ function safeDecode(text) {
   }
 }
 
+const MAX_FILENAME_LENGTH = 180;
+
+// Keeps a filename within filesystem limits without losing its extension.
+function truncateFilename(name) {
+  if (name.length <= MAX_FILENAME_LENGTH) return name;
+  const dotIdx = name.lastIndexOf(".");
+  const ext = dotIdx > 0 && name.length - dotIdx <= 12 ? name.slice(dotIdx) : "";
+  return name.slice(0, Math.max(1, MAX_FILENAME_LENGTH - ext.length)) + ext;
+}
+
 function sanitizeFilename(name) {
-  const clean = String(name ?? "")
-    .replace(/^Download\s+file:\s*/i, "")
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-    .replace(/_{2,}/g, "_")
-    .trim()
-    .replace(/^\.+$/, "");
+  const clean = truncateFilename(
+    String(name ?? "")
+      .replace(/^Download\s+file:\s*/i, "")
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+      .replace(/_{2,}/g, "_")
+      .trim()
+      // Strips trailing dots/spaces, which Windows rejects. This also empties
+      // traversal segments such as "." and "..".
+      .replace(/[. ]+$/, "")
+      .trim()
+  );
   return clean || "download";
 }
 
@@ -213,7 +228,26 @@ async function fetchWithTimeout(url) {
   }
 }
 
-async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
+// Wraps the popup port so a scan stops cleanly when the popup closes mid-crawl
+// instead of throwing on postMessage to a disconnected port.
+function createScanReporter(port) {
+  const reporter = { cancelled: false, post() {} };
+  if (!port) return reporter;
+
+  port.onDisconnect.addListener(() => { reporter.cancelled = true; });
+  reporter.post = (msg) => {
+    if (reporter.cancelled) return;
+    try {
+      port.postMessage(msg);
+    } catch {
+      reporter.cancelled = true;
+    }
+  };
+  return reporter;
+}
+
+async function scanDirectory(url, basePath, depth, maxDepth, visited, reporter) {
+  if (reporter?.cancelled) return null;
   url = normalizeDirectoryUrl(url);
   if (depth > maxDepth || visited.has(url)) return null;
   if (visited.size >= MAX_DIRS) return null;
@@ -280,10 +314,9 @@ async function scanDirectory(url, basePath, depth, maxDepth, visited, port) {
   }
 
   for (const sub of subdirs) {
-    if (port) {
-      port.postMessage({ type: "progress", url: sub.url, name: sub.name, depth });
-    }
-    const childNode = await scanDirectory(sub.url, sub.name, depth + 1, maxDepth, visited, port);
+    if (reporter?.cancelled) break;
+    reporter?.post({ type: "progress", url: sub.url, name: sub.name, depth });
+    const childNode = await scanDirectory(sub.url, sub.name, depth + 1, maxDepth, visited, reporter);
     if (childNode) {
       node.children.push(childNode);
     }
@@ -308,12 +341,14 @@ if (!window.__fileDownloaderInjected) {
   api.runtime.onConnect.addListener((port) => {
     if (port.name !== "directoryScan") return;
 
+    const reporter = createScanReporter(port);
+
     port.onMessage.addListener(async (message) => {
       if (message.action === "scanDirectory") {
         const maxDepth = message.maxDepth || 5;
         const visited = new Set();
-        const tree = await scanDirectory(location.href, null, 0, maxDepth, visited, port);
-        port.postMessage({ type: "done", tree, truncated: visited.size >= MAX_DIRS });
+        const tree = await scanDirectory(location.href, null, 0, maxDepth, visited, reporter);
+        reporter.post({ type: "done", tree, truncated: visited.size >= MAX_DIRS });
       }
     });
   });

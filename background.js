@@ -1,15 +1,29 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
 
 const MAX_CONCURRENT = 3;
+const MAX_SEGMENT_LENGTH = 180;
 const STATE_KEY = "downloadState";
 
+// Keeps a filename within filesystem limits without losing its extension.
+function truncatePathSegment(segment) {
+  if (segment.length <= MAX_SEGMENT_LENGTH) return segment;
+  const dotIdx = segment.lastIndexOf(".");
+  const ext = dotIdx > 0 && segment.length - dotIdx <= 12 ? segment.slice(dotIdx) : "";
+  return segment.slice(0, Math.max(1, MAX_SEGMENT_LENGTH - ext.length)) + ext;
+}
+
 function sanitizePathSegment(segment) {
-  return String(segment ?? "")
-    .replace(/^Download\s+file:\s*/i, "")
-    .replace(/[<>:"\\|?*\x00-\x1F]/g, "_")
-    .replace(/_{2,}/g, "_")
-    .trim()
-    .replace(/^\.+$/, "");
+  return truncatePathSegment(
+    String(segment ?? "")
+      .replace(/^Download\s+file:\s*/i, "")
+      .replace(/[<>:"\\|?*\x00-\x1F]/g, "_")
+      .replace(/_{2,}/g, "_")
+      .trim()
+      // Strips trailing dots/spaces, which Windows rejects. This also empties
+      // traversal segments such as "." and "..".
+      .replace(/[. ]+$/, "")
+      .trim()
+  );
 }
 
 function sanitizeDownloadPath(path, fallback = "download") {
@@ -22,19 +36,29 @@ function sanitizeDownloadPath(path, fallback = "download") {
 
 let queue = [];
 let active = new Map();
-let starting = 0;
+// Files whose downloads.download() call is in flight. Tracked as a list rather
+// than a counter so they survive a service-worker restart.
+let starting = [];
 let completed = [];
 let failed = [];
 let totalInBatch = 0;
 let downloadPort = null;
-let loadPromise = loadState();
+let loadPromise = restoreState();
+
+async function restoreState() {
+  await loadState();
+  // A worker restart strands whatever was queued or mid-start, and no download
+  // event will ever reference those files. Resume them as soon as we wake up.
+  if (queue.length > 0) processQueue();
+}
 
 async function loadState() {
   try {
     const data = await api.storage.session.get(STATE_KEY);
     const s = data[STATE_KEY];
     if (!s) return;
-    queue = s.queue || [];
+    // Downloads interrupted mid-start are re-queued ahead of the backlog.
+    queue = [...(s.starting || []), ...(s.queue || [])];
     active = new Map(s.active || []);
     completed = s.completed || [];
     failed = s.failed || [];
@@ -45,6 +69,7 @@ async function loadState() {
 function saveState() {
   const payload = {
     queue,
+    starting,
     active: [...active],
     completed,
     failed,
@@ -61,7 +86,7 @@ function sendProgress() {
   notify({
     type: "progress",
     queued: queue.length,
-    active: active.size + starting,
+    active: active.size + starting.length,
     completed: completed.length,
     failed: failed.length,
     total: totalInBatch
@@ -69,23 +94,36 @@ function sendProgress() {
 }
 
 function hasPendingDownloads() {
-  return starting > 0 || active.size > 0 || queue.length > 0;
+  return starting.length > 0 || active.size > 0 || queue.length > 0;
+}
+
+function isBatchSettled() {
+  return totalInBatch > 0 && !hasPendingDownloads();
+}
+
+function sendDone() {
+  notify({
+    type: "done",
+    completed: completed.length,
+    total: totalInBatch,
+    failed: failed.map((f) => ({ url: f.url, filename: f.filename }))
+  });
+}
+
+function removeStarting(file) {
+  const idx = starting.indexOf(file);
+  if (idx !== -1) starting.splice(idx, 1);
 }
 
 function processQueue() {
-  while (active.size + starting < MAX_CONCURRENT && queue.length > 0) {
-    starting += 1;
-    startDownload(queue.shift());
+  while (active.size + starting.length < MAX_CONCURRENT && queue.length > 0) {
+    const file = queue.shift();
+    starting.push(file);
+    startDownload(file);
   }
   saveState();
   sendProgress();
-  if (starting === 0 && active.size === 0 && queue.length === 0 && totalInBatch > 0) {
-    notify({
-      type: "done",
-      completed: completed.length,
-      failed: failed.map((f) => ({ url: f.url, filename: f.filename }))
-    });
-  }
+  if (isBatchSettled()) sendDone();
 }
 
 async function startDownload(file) {
@@ -96,12 +134,12 @@ async function startDownload(file) {
       if (subfolder) filename = `${subfolder}/${filename}`;
     }
     const id = await api.downloads.download({ url: file.url, filename });
+    removeStarting(file);
     active.set(id, file);
-    saveState();
   } catch {
+    removeStarting(file);
     failed.push(file);
   } finally {
-    starting = Math.max(0, starting - 1);
     processQueue();
   }
 }
@@ -151,18 +189,12 @@ api.runtime.onConnect.addListener((port) => {
     } else if (msg.action === "retry") {
       const toRetry = [...failed];
       failed = [];
-      totalInBatch = completed.length + toRetry.length + active.size + starting + queue.length;
+      totalInBatch = completed.length + toRetry.length + active.size + starting.length + queue.length;
       queue.push(...toRetry);
       processQueue();
     } else if (msg.action === "status") {
       sendProgress();
-      if (totalInBatch > 0 && starting === 0 && active.size === 0 && queue.length === 0) {
-        notify({
-          type: "done",
-          completed: completed.length,
-          failed: failed.map((f) => ({ url: f.url, filename: f.filename }))
-        });
-      }
+      if (isBatchSettled()) sendDone();
     }
   });
 });

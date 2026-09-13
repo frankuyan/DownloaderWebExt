@@ -20,6 +20,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Popup badge state is cleared when a scan finds no files.
 - Download requests received while a batch is active are appended to the
   current queue instead of resetting batch accounting.
+- Filtering or sorting the list no longer drops selections. Selected files are
+  tracked independently of the rendered DOM, so files hidden by the search box
+  are still downloaded.
+- Downloads that were queued or mid-start when the service worker restarted are
+  now persisted and resumed instead of being silently lost, which previously
+  left the batch stuck below its reported total.
+- Filenames derived from link text, `title`, or `aria-label` are capped at 180
+  characters (extension preserved) so long labels no longer produce downloads
+  the filesystem rejects.
+- Filenames and path segments now have trailing dots and spaces stripped, which
+  Windows rejects.
+- Directory scans stop cleanly when the popup is closed mid-crawl instead of
+  throwing on a disconnected port.
+- The progress bar reflects files actually downloaded, so a batch that entirely
+  failed no longer renders as 100% complete.
+- The popup reconnects to the background worker if its port was dropped, and
+  reports a failure instead of throwing when it cannot be reached.
 
 ### Changed
 - Chrome and Firefox packages now use separate manifests so each browser gets

@@ -30,6 +30,7 @@ function runBackground(scriptOverrides = {}) {
       download(file) {
         const id = nextId++;
         started.push({ id, file });
+        if (scriptOverrides.downloadNeverResolves) return new Promise(() => {});
         return new Promise((resolve) => setTimeout(() => resolve(id), 20));
       },
       onChanged: {
@@ -184,11 +185,111 @@ function testContentHelpers() {
   assert(typeof messageListener === "function", "Content script should register a message listener");
 }
 
+function testBackgroundPathTraversalIsStripped() {
+  const { context } = runBackground({ storage: {} });
+  const { sanitizeDownloadPath } = context;
+
+  assert(sanitizeDownloadPath("../../etc/passwd") === "etc/passwd", "Parent-directory segments should be dropped");
+  assert(sanitizeDownloadPath("a/./b/../c.pdf") === "a/b/c.pdf", "Dot segments should be dropped from the middle of a path");
+  assert(sanitizeDownloadPath("..") === "download", "A path made only of traversal segments should fall back");
+  assert(sanitizeDownloadPath("report.pdf.") === "report.pdf", "Trailing dots, which Windows rejects, should be stripped");
+  assert(sanitizeDownloadPath("report.pdf ") === "report.pdf", "Trailing spaces, which Windows rejects, should be stripped");
+  assert(sanitizeDownloadPath(".gitignore") === ".gitignore", "Leading dots should be preserved");
+}
+
+function testFilenameLengthCaps() {
+  const { context: background } = runBackground({ storage: {} });
+  const { context: content } = runContent();
+
+  const longName = `${"a".repeat(400)}.pdf`;
+
+  const fromContent = content.sanitizeFilename(longName);
+  assert(fromContent.length <= 180, `Content filenames should be capped, got ${fromContent.length}`);
+  assert(fromContent.endsWith(".pdf"), "Truncation should preserve the extension");
+
+  const fromBackground = background.sanitizeDownloadPath(longName);
+  assert(fromBackground.length <= 180, `Background filenames should be capped, got ${fromBackground.length}`);
+  assert(fromBackground.endsWith(".pdf"), "Truncation should preserve the extension");
+
+  const noExtension = "b".repeat(400);
+  assert(content.sanitizeFilename(noExtension).length === 180, "Extensionless names should be truncated to the cap");
+}
+
+// storage.session survives a service-worker restart, so a fresh worker must pick
+// the queue back up.
+function createSessionStorage() {
+  const store = {};
+  return {
+    session: {
+      async get(key) {
+        return key in store ? { [key]: store[key] } : {};
+      },
+      set(obj) {
+        Object.assign(store, obj);
+        return Promise.resolve();
+      }
+    },
+    read: () => store.downloadState
+  };
+}
+
+async function testBackgroundResumesAfterWorkerRestart() {
+  const storage = createSessionStorage();
+  const files = Array.from({ length: 5 }, (_, i) => ({
+    url: `https://example.test/${i}.txt`,
+    filename: `file-${i}.txt`
+  }));
+
+  // First worker: three downloads are mid-start when the worker is torn down.
+  const first = runBackground({ storage, downloadNeverResolves: true });
+  first.port.onMessage.listener({ action: "download", files });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert(first.started.length === 3, `Expected 3 in-flight starts, got ${first.started.length}`);
+  const saved = storage.read();
+  assert(saved.starting.length === 3, "In-flight downloads must be persisted, not held only in memory");
+  assert(saved.queue.length === 2, `Expected 2 files still queued, got ${saved.queue.length}`);
+  assert(saved.totalInBatch === 5, "Batch total should be persisted");
+
+  // Second worker boots from the persisted state and resumes on its own.
+  const second = runBackground({ storage });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert(second.started.length === 3, `Restarted worker should resume downloads, got ${second.started.length}`);
+  const resumed = second.started.map((s) => s.file.filename);
+  assert(
+    resumed.join(",") === "file-0.txt,file-1.txt,file-2.txt",
+    `Interrupted downloads should restart before the backlog, got ${resumed.join(",")}`
+  );
+}
+
+async function testDoneMessageCarriesBatchTotal() {
+  const { port, messages, changedListener } = runBackground();
+
+  port.onMessage.listener({
+    action: "download",
+    files: [{ url: "https://example.test/a.txt", filename: "a.txt" }]
+  });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  await changedListener()({ id: 1, state: { current: "complete" } });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const done = messages.find((msg) => msg.type === "done");
+  assert(done, "A settled batch should emit a done message");
+  assert(done.total === 1, `Done message should report the batch total, got ${done.total}`);
+  assert(done.completed === 1, `Done message should report completions, got ${done.completed}`);
+}
+
 async function main() {
   testBackgroundPathSanitization();
+  testBackgroundPathTraversalIsStripped();
+  testFilenameLengthCaps();
   testContentHelpers();
   await testBackgroundConcurrency();
   await testBackgroundAppendsDownloadsWhileBusy();
+  await testBackgroundResumesAfterWorkerRestart();
+  await testDoneMessageCarriesBatchTotal();
   console.log("Smoke tests passed.");
 }
 

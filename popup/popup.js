@@ -37,6 +37,9 @@ let isTreeMode = false;
 let downloadPort = null;
 let typePreferences = {};
 let activeTabId = null;
+// Selected files keyed by URL. Kept outside the DOM so filtering or sorting —
+// which rebuilds the list — never silently drops a selection.
+const selection = new Map();
 
 // --- DOM refs ---
 const fileListEl = document.getElementById("fileList");
@@ -64,16 +67,24 @@ function getCategoryForType(type) {
   return "Other";
 }
 
+function syncSelection(cb) {
+  if (cb.checked) selection.set(cb.dataset.url, cb.dataset.filename);
+  else selection.delete(cb.dataset.url);
+}
+
+function setCheckboxes(root, checked) {
+  root.querySelectorAll(".file-checkbox").forEach((cb) => {
+    cb.checked = checked;
+    syncSelection(cb);
+  });
+}
+
 function getSelectedFiles() {
-  const checked = fileListEl.querySelectorAll(".file-checkbox:checked");
-  return Array.from(checked).map((cb) => ({
-    url: cb.dataset.url,
-    filename: cb.dataset.filename
-  }));
+  return Array.from(selection, ([url, filename]) => ({ url, filename }));
 }
 
 function updateDownloadBtn() {
-  const count = getSelectedFiles().length;
+  const count = selection.size;
   downloadBtn.disabled = count === 0;
   downloadBtn.textContent = count > 0 ? `Download Selected (${count})` : "Download Selected";
 }
@@ -81,7 +92,7 @@ function updateDownloadBtn() {
 function updateGroupCheckbox(groupEl) {
   const checkboxes = groupEl.querySelectorAll(".file-checkbox");
   const groupCb = groupEl.querySelector(".group-checkbox");
-  if (!groupCb) return;
+  if (!groupCb || checkboxes.length === 0) return;
   const allChecked = Array.from(checkboxes).every((cb) => cb.checked);
   const someChecked = Array.from(checkboxes).some((cb) => cb.checked);
   groupCb.checked = allChecked;
@@ -118,6 +129,16 @@ function savePreference(category, checked) {
   api.storage.local.set({ typePreferences }).catch(() => {});
 }
 
+// Seeds the initial selection from saved per-type preferences. Applied once per
+// scan so later re-renders cannot undo the user's manual changes.
+function applyTypePreferences() {
+  for (const file of allFiles) {
+    if (typePreferences[getCategoryForType(file.type)]) {
+      selection.set(file.url, file.filename);
+    }
+  }
+}
+
 // --- Badge on extension icon ---
 function setBadge(count) {
   try {
@@ -129,7 +150,7 @@ function setBadge(count) {
 
 // --- Render: Flat file list ---
 function renderFiles(filter = "") {
-  fileListEl.querySelectorAll(".group-section").forEach((el) => el.remove());
+  fileListEl.querySelectorAll(".group-section, .tree-node").forEach((el) => el.remove());
 
   const lowerFilter = filter.toLowerCase();
   const grouped = {};
@@ -160,7 +181,6 @@ function renderFiles(filter = "") {
     const groupCb = document.createElement("input");
     groupCb.type = "checkbox";
     groupCb.className = "group-checkbox";
-    if (typePreferences[cat]) groupCb.checked = true;
     header.appendChild(groupCb);
     header.appendChild(document.createTextNode(`${cat} (${files.length})`));
     section.appendChild(header);
@@ -175,8 +195,9 @@ function renderFiles(filter = "") {
       cb.className = "file-checkbox";
       cb.dataset.url = file.url;
       cb.dataset.filename = file.filename;
-      if (typePreferences[cat]) cb.checked = true;
+      cb.checked = selection.has(file.url);
       cb.addEventListener("change", () => {
+        syncSelection(cb);
         updateGroupCheckbox(section);
         updateDownloadBtn();
       });
@@ -208,13 +229,13 @@ function renderFiles(filter = "") {
     }
 
     groupCb.addEventListener("change", () => {
-      const checkboxes = section.querySelectorAll(".file-checkbox");
-      checkboxes.forEach((cb) => (cb.checked = groupCb.checked));
+      setCheckboxes(section, groupCb.checked);
       savePreference(cat, groupCb.checked);
       updateDownloadBtn();
     });
 
     fileListEl.appendChild(section);
+    updateGroupCheckbox(section);
   }
 
   emptyEl.classList.toggle("hidden", anyVisible);
@@ -276,7 +297,9 @@ function renderTreeNode(node, depth, filter) {
     cb.className = "file-checkbox";
     cb.dataset.url = node.url;
     cb.dataset.filename = getTreeDownloadPath(node);
+    cb.checked = selection.has(node.url);
     cb.addEventListener("change", () => {
+      syncSelection(cb);
       updateAncestorCheckboxes(cb);
       updateDownloadBtn();
     });
@@ -349,6 +372,7 @@ function renderTreeNode(node, depth, filter) {
   if (filter && childrenContainer.children.length === 0) return null;
 
   container.appendChild(childrenContainer);
+  updateDirCheckbox(container);
 
   const toggleExpand = () => {
     const isCollapsed = childrenContainer.classList.toggle("collapsed");
@@ -363,8 +387,7 @@ function renderTreeNode(node, depth, filter) {
   });
 
   dirCb.addEventListener("change", () => {
-    const fileCheckboxes = childrenContainer.querySelectorAll(".file-checkbox");
-    fileCheckboxes.forEach((cb) => (cb.checked = dirCb.checked));
+    setCheckboxes(childrenContainer, dirCb.checked);
     const childDirCbs = childrenContainer.querySelectorAll(".dir-checkbox");
     childDirCbs.forEach((cb) => {
       cb.checked = dirCb.checked;
@@ -410,13 +433,28 @@ function connectDownloadPort() {
     else if (msg.type === "done") showDownloadDone(msg);
   });
   downloadPort.onDisconnect.addListener(() => { downloadPort = null; });
-  downloadPort.postMessage({ action: "status" });
+}
+
+// The background service worker can be torn down while the popup is open, which
+// disconnects the port. Reconnect lazily instead of throwing on postMessage.
+function postToBackground(msg) {
+  try {
+    if (!downloadPort) connectDownloadPort();
+    downloadPort.postMessage(msg);
+    return true;
+  } catch {
+    downloadPort = null;
+    return false;
+  }
 }
 
 function showProgress({ completed, failed, active, queued, total }) {
-  if (total === 0) return;
+  if (!total) {
+    progressContainer.classList.add("hidden");
+    return;
+  }
   progressContainer.classList.remove("hidden");
-  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const pct = Math.round((completed / total) * 100);
   progressBar.style.width = `${pct}%`;
 
   let text = `${completed}/${total} completed`;
@@ -428,8 +466,12 @@ function showProgress({ completed, failed, active, queued, total }) {
   if (failed > 0) retryBtn.textContent = `Retry Failed (${failed})`;
 }
 
-function showDownloadDone({ completed, failed }) {
-  progressBar.style.width = "100%";
+function showDownloadDone({ completed, total, failed }) {
+  // The bar reflects what actually downloaded, so a fully failed batch does not
+  // render as 100% complete.
+  const denominator = total || completed + failed.length;
+  const pct = denominator > 0 ? Math.round((completed / denominator) * 100) : 0;
+  progressBar.style.width = `${pct}%`;
 
   if (failed.length > 0) {
     progressText.textContent = `Done: ${completed} downloaded, ${failed.length} failed`;
@@ -484,11 +526,22 @@ async function scanActiveTab() {
   }
 
   await loadPreferences();
+  selection.clear();
+  applyTypePreferences();
   renderFiles();
 }
 
 function startDirectoryScan() {
   if (!activeTabId) return;
+
+  let port;
+  try {
+    port = api.tabs.connect(activeTabId, { name: "directoryScan" });
+  } catch {
+    scanStatus.classList.remove("hidden");
+    scanStatus.textContent = "Could not start scan. Reload the page and try again.";
+    return;
+  }
 
   scanDirBtn.disabled = true;
   scanDirBtn.textContent = "Scanning...";
@@ -497,8 +550,6 @@ function startDirectoryScan() {
 
   let dirCount = 0;
   let scanFinished = false;
-
-  const port = api.tabs.connect(activeTabId, { name: "directoryScan" });
 
   port.onDisconnect.addListener(() => {
     if (!scanFinished) {
@@ -516,6 +567,7 @@ function startDirectoryScan() {
       scanFinished = true;
       treeData = msg.tree;
       isTreeMode = true;
+      selection.clear();
       const truncatedText = msg.truncated ? " (limit reached)" : "";
 
       if (treeData) {
@@ -555,10 +607,7 @@ scanDirBtn.addEventListener("click", startDirectoryScan);
 
 // Select all / deselect all
 document.getElementById("selectAll").addEventListener("click", () => {
-  fileListEl.querySelectorAll(".file-checkbox").forEach((cb) => {
-    const item = cb.closest(".file-item, .tree-file");
-    if (item && !item.classList.contains("hidden")) cb.checked = true;
-  });
+  setCheckboxes(fileListEl, true);
   fileListEl.querySelectorAll(".group-checkbox, .dir-checkbox").forEach((cb) => {
     cb.checked = true;
     cb.indeterminate = false;
@@ -567,6 +616,8 @@ document.getElementById("selectAll").addEventListener("click", () => {
 });
 
 document.getElementById("deselectAll").addEventListener("click", () => {
+  // Clears everything, including selections currently hidden by the filter.
+  selection.clear();
   fileListEl.querySelectorAll(".file-checkbox").forEach((cb) => (cb.checked = false));
   fileListEl.querySelectorAll(".group-checkbox, .dir-checkbox").forEach((cb) => {
     cb.checked = false;
@@ -586,8 +637,11 @@ downloadBtn.addEventListener("click", () => {
     subfolder: subfolder || undefined
   }));
 
-  if (!downloadPort) connectDownloadPort();
-  downloadPort.postMessage({ action: "download", files: payload });
+  if (!postToBackground({ action: "download", files: payload })) {
+    progressContainer.classList.remove("hidden");
+    progressText.textContent = "Could not reach the downloader. Try again.";
+    return;
+  }
 
   downloadBtn.disabled = true;
   downloadBtn.textContent = "Downloading...";
@@ -599,8 +653,10 @@ downloadBtn.addEventListener("click", () => {
 
 // Retry failed
 retryBtn.addEventListener("click", () => {
-  if (!downloadPort) connectDownloadPort();
-  downloadPort.postMessage({ action: "retry" });
+  if (!postToBackground({ action: "retry" })) {
+    progressText.textContent = "Could not reach the downloader. Try again.";
+    return;
+  }
   retryBtn.classList.add("hidden");
   progressText.textContent = "Retrying failed downloads...";
 });
@@ -654,5 +710,5 @@ document.addEventListener("keydown", (e) => {
 });
 
 // --- Init ---
-connectDownloadPort();
+postToBackground({ action: "status" });
 scanActiveTab();
