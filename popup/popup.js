@@ -45,6 +45,9 @@ let downloadPort = null;
 let typePreferences = {};
 let activeTabId = null;
 let scanSettings = { ...DEFAULT_SCAN_SETTINGS };
+// Non-null while a directory crawl is running, so a second scan cannot be
+// started underneath the first and race it to set treeData.
+let activeScanPort = null;
 // Selected files keyed by URL. Kept outside the DOM so filtering or sorting —
 // which rebuilds the list — never silently drops a selection.
 const selection = new Map();
@@ -69,6 +72,7 @@ const retryBtn = document.getElementById("retryBtn");
 const includeAllTypesEl = document.getElementById("includeAllTypes");
 const scanDepthEl = document.getElementById("scanDepth");
 const scanMaxDirsEl = document.getElementById("scanMaxDirs");
+const stopScanBtn = document.getElementById("stopScanBtn");
 
 // --- Utility ---
 function getCategoryForType(type) {
@@ -365,13 +369,17 @@ function renderTreeNode(node, depth, filter) {
   dirRow.className = "dir-node";
   dirRow.style.paddingLeft = `${depth * 16 + 6}px`;
 
-  const toggle = document.createElement("span");
+  // A real button so the tree can be expanded from the keyboard, not just by
+  // clicking the row.
+  const toggle = document.createElement("button");
+  toggle.type = "button";
   toggle.className = "tree-toggle";
   toggle.textContent = "\u25BC";
 
   const dirCb = document.createElement("input");
   dirCb.type = "checkbox";
   dirCb.className = "dir-checkbox";
+  dirCb.setAttribute("aria-label", `Select all files in ${node.name}`);
 
   const dirIcon = document.createElement("span");
   dirIcon.className = "dir-icon";
@@ -413,11 +421,22 @@ function renderTreeNode(node, depth, filter) {
   const toggleExpand = () => {
     const isCollapsed = childrenContainer.classList.toggle("collapsed");
     toggle.classList.toggle("collapsed", isCollapsed);
+    toggle.setAttribute("aria-expanded", String(!isCollapsed));
+    toggle.setAttribute("aria-label", `${isCollapsed ? "Expand" : "Collapse"} ${node.name}`);
     dirIcon.textContent = isCollapsed ? "\u{1F4C1}" : "\u{1F4C2}";
   };
 
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.setAttribute("aria-label", `Collapse ${node.name}`);
+
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleExpand();
+  });
+
   dirRow.addEventListener("click", (e) => {
-    if (e.target === dirCb) return;
+    // The checkbox and the toggle handle their own clicks.
+    if (e.target === dirCb || e.target === toggle) return;
     e.stopPropagation();
     toggleExpand();
   });
@@ -585,8 +604,35 @@ async function runPageScan() {
   renderFiles(searchEl.value);
 }
 
+function setScanRunning(running) {
+  scanDirBtn.disabled = running;
+  includeAllTypesEl.disabled = running;
+  scanDepthEl.disabled = running;
+  scanMaxDirsEl.disabled = running;
+  stopScanBtn.classList.toggle("hidden", !running);
+  stopScanBtn.disabled = false;
+  stopScanBtn.textContent = "Stop";
+}
+
+// Describes how a finished crawl ended: how much it covered, why it stopped,
+// and whether directories were unreachable.
+function describeScanResult(msg, fileCount) {
+  const parts = [];
+  parts.push(fileCount > 0
+    ? `Found ${fileCount} file${fileCount === 1 ? "" : "s"} in ${msg.scanned} director${msg.scanned === 1 ? "y" : "ies"}`
+    : `No files found in ${msg.scanned} director${msg.scanned === 1 ? "y" : "ies"}`);
+
+  if (msg.cancelled) parts.push("stopped early");
+  else if (msg.truncated) parts.push("directory limit reached");
+
+  if (msg.failedCount > 0) {
+    parts.push(`${msg.failedCount} unreachable`);
+  }
+  return parts.join(" \u00B7 ");
+}
+
 function startDirectoryScan() {
-  if (!activeTabId) return;
+  if (!activeTabId || activeScanPort) return;
 
   let port;
   try {
@@ -597,7 +643,8 @@ function startDirectoryScan() {
     return;
   }
 
-  scanDirBtn.disabled = true;
+  activeScanPort = port;
+  setScanRunning(true);
   scanDirBtn.textContent = "Scanning...";
   scanStatus.classList.remove("hidden");
   scanStatus.textContent = "Starting scan...";
@@ -606,9 +653,10 @@ function startDirectoryScan() {
   let scanFinished = false;
 
   port.onDisconnect.addListener(() => {
+    activeScanPort = null;
     if (!scanFinished) {
+      setScanRunning(false);
       scanDirBtn.textContent = "Scan Subdirectories";
-      scanDirBtn.disabled = false;
       scanStatus.textContent = "Scan interrupted. Try again.";
     }
   });
@@ -616,29 +664,34 @@ function startDirectoryScan() {
   port.onMessage.addListener((msg) => {
     if (msg.type === "progress") {
       dirCount++;
-      scanStatus.textContent = `Scanning... (${dirCount} directories explored)`;
+      scanStatus.textContent = `Scanning... (${dirCount} director${dirCount === 1 ? "y" : "ies"} explored)`;
     } else if (msg.type === "done") {
       scanFinished = true;
       treeData = msg.tree;
       isTreeMode = true;
       selection.clear();
-      const truncatedText = msg.truncated ? " (limit reached)" : "";
 
-      if (treeData) {
-        const total = countFiles(treeData);
-        badgeEl.textContent = total;
+      const fileCount = treeData ? countFiles(treeData) : 0;
+      if (fileCount > 0) {
+        badgeEl.textContent = fileCount;
         badgeEl.classList.remove("hidden");
-        setBadge(total);
-        scanDirBtn.textContent = "Rescan";
-        scanDirBtn.disabled = false;
-        scanStatus.textContent = `Found ${total} files in ${dirCount + 1} directories${truncatedText}`;
+        setBadge(fileCount);
       } else {
-        scanDirBtn.textContent = "Scan Subdirectories";
-        scanDirBtn.disabled = false;
-        scanStatus.textContent = `No files found in subdirectories.${truncatedText}`;
+        badgeEl.classList.add("hidden");
+        setBadge(0);
+      }
+
+      setScanRunning(false);
+      scanDirBtn.textContent = treeData ? "Rescan" : "Scan Subdirectories";
+      scanStatus.textContent = describeScanResult(msg, fileCount);
+      if (msg.failedCount > 0) {
+        scanStatus.title = msg.failed.map((f) => `${f.url} (${f.reason})`).join("\n");
+      } else {
+        scanStatus.removeAttribute("title");
       }
 
       render(searchEl.value);
+      activeScanPort = null;
       port.disconnect();
     }
   });
@@ -650,6 +703,20 @@ function startDirectoryScan() {
     includeAllTypes: scanSettings.includeAllTypes
   });
 }
+
+stopScanBtn.addEventListener("click", () => {
+  if (!activeScanPort) return;
+  stopScanBtn.disabled = true;
+  stopScanBtn.textContent = "Stopping...";
+  scanStatus.textContent = "Stopping scan...";
+  try {
+    activeScanPort.postMessage({ action: "cancelScan" });
+  } catch {
+    activeScanPort = null;
+    setScanRunning(false);
+    scanDirBtn.textContent = "Scan Subdirectories";
+  }
+});
 
 // --- Event Listeners ---
 

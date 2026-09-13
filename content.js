@@ -222,6 +222,10 @@ function scanPage({ includeAllTypes = false } = {}) {
 
 const DEFAULT_MAX_DIRS = 200;
 const DEFAULT_MAX_DEPTH = 5;
+// Directories fetched in parallel. Kept low deliberately: the crawler hits a
+// stranger's file server, and a wide fan-out looks like a hammering client.
+const DEFAULT_CONCURRENCY = 5;
+const MAX_CONCURRENCY = 16;
 const FETCH_TIMEOUT_MS = 15000;
 
 // Depth/limit come from the popup. Fall back to the defaults rather than to
@@ -234,6 +238,9 @@ function resolveScanOptions(message) {
       ? Number.MAX_SAFE_INTEGER
       : Number.isInteger(rawDepth) && rawDepth > 0 ? rawDepth : DEFAULT_MAX_DEPTH,
     maxDirs: Number.isInteger(rawDirs) && rawDirs > 0 ? rawDirs : DEFAULT_MAX_DIRS,
+    concurrency: Number.isInteger(message.concurrency) && message.concurrency > 0
+      ? Math.min(message.concurrency, MAX_CONCURRENCY)
+      : DEFAULT_CONCURRENCY,
     includeAllTypes: Boolean(message.includeAllTypes)
   };
 }
@@ -268,35 +275,74 @@ async function fetchWithTimeout(url) {
 
 // Wraps the popup port so a scan stops cleanly when the popup closes mid-crawl
 // instead of throwing on postMessage to a disconnected port.
+//
+// "cancelled" and "disconnected" are separate: a user-requested stop still has
+// to deliver the partial tree, while a closed popup cannot receive anything.
 function createScanReporter(port) {
-  const reporter = { cancelled: false, post() {} };
+  const reporter = { cancelled: false, disconnected: false, post() {} };
   if (!port) return reporter;
 
-  port.onDisconnect.addListener(() => { reporter.cancelled = true; });
+  port.onDisconnect.addListener(() => {
+    reporter.disconnected = true;
+    reporter.cancelled = true;
+  });
+
   reporter.post = (msg) => {
-    if (reporter.cancelled) return;
+    if (reporter.disconnected) return;
     try {
       port.postMessage(msg);
     } catch {
+      reporter.disconnected = true;
       reporter.cancelled = true;
     }
   };
   return reporter;
 }
 
-async function scanDirectory(url, basePath, depth, visited, reporter, opts) {
+// Runs fn over items with a bounded number in flight, preserving input order in
+// the results so the rendered tree does not depend on which fetch won.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  if (items.length === 0) return results;
+
+  // A malformed limit falls back to serial rather than to NaN workers, which
+  // would resolve immediately and silently drop every item.
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 1;
+  let next = 0;
+
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(safeLimit, items.length) }, worker)
+  );
+  return results;
+}
+
+async function scanDirectory(url, basePath, depth, ctx, opts) {
+  const { visited, reporter, stats } = ctx;
   if (reporter?.cancelled) return null;
   url = normalizeDirectoryUrl(url);
   if (depth > opts.maxDepth || visited.has(url)) return null;
+  // Checked and claimed without awaiting in between, so concurrent workers
+  // cannot both slip past the cap or crawl the same directory twice.
   if (visited.size >= opts.maxDirs) return null;
   visited.add(url);
 
   let html;
   try {
     const resp = await fetchWithTimeout(url);
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      stats.failed.push({ url, reason: `HTTP ${resp.status}` });
+      return null;
+    }
     html = await resp.text();
-  } catch {
+  } catch (err) {
+    stats.failed.push({ url, reason: err?.name === "AbortError" ? "timed out" : "unreachable" });
     return null;
   }
 
@@ -351,13 +397,14 @@ async function scanDirectory(url, basePath, depth, visited, reporter, opts) {
     }
   }
 
-  for (const sub of subdirs) {
-    if (reporter?.cancelled) break;
+  const childNodes = await mapWithConcurrency(subdirs, opts.concurrency, async (sub) => {
+    if (reporter?.cancelled) return null;
     reporter?.post({ type: "progress", url: sub.url, name: sub.name, depth });
-    const childNode = await scanDirectory(sub.url, sub.name, depth + 1, visited, reporter, opts);
-    if (childNode) {
-      node.children.push(childNode);
-    }
+    return scanDirectory(sub.url, sub.name, depth + 1, ctx, opts);
+  });
+
+  for (const childNode of childNodes) {
+    if (childNode) node.children.push(childNode);
   }
 
   return node;
@@ -382,11 +429,26 @@ if (!window.__fileDownloaderInjected) {
     const reporter = createScanReporter(port);
 
     port.onMessage.addListener(async (message) => {
+      if (message.action === "cancelScan") {
+        // Unwinds the in-flight crawl; the partial tree is still delivered.
+        reporter.cancelled = true;
+        return;
+      }
+
       if (message.action === "scanDirectory") {
         const opts = resolveScanOptions(message);
-        const visited = new Set();
-        const tree = await scanDirectory(location.href, null, 0, visited, reporter, opts);
-        reporter.post({ type: "done", tree, truncated: visited.size >= opts.maxDirs });
+        const ctx = { visited: new Set(), reporter, stats: { failed: [] } };
+        const tree = await scanDirectory(location.href, null, 0, ctx, opts);
+
+        reporter.post({
+          type: "done",
+          tree,
+          truncated: ctx.visited.size >= opts.maxDirs,
+          cancelled: reporter.cancelled,
+          scanned: ctx.visited.size,
+          failed: ctx.stats.failed.slice(0, 20),
+          failedCount: ctx.stats.failed.length
+        });
       }
     });
   });

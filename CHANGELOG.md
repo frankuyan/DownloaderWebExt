@@ -39,6 +39,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reports a failure instead of throwing when it cannot be reached.
 
 ### Added
+- Directory scans now fetch up to 5 directories in parallel instead of strictly
+  one at a time (roughly 3x faster on a latency-bound tree). The pool is bounded
+  so the crawler does not hammer a stranger's file server, and tree order stays
+  deterministic regardless of which fetch finishes first.
+- A **Stop** button ends a running scan and keeps the partial tree, and the other
+  scan controls lock while a crawl is in flight so a second scan cannot race the
+  first.
+- Directories that time out or return an error are now counted and listed in the
+  scan status (hover for the URLs and reasons) instead of being silently skipped.
+- The tree view's expand/collapse control is a real button: keyboard reachable,
+  operable with Enter/Space, and exposing `aria-expanded`. Directory checkboxes
+  carry an accessible name, and checkboxes have a visible focus ring.
 - The **Scan Subdirectories** button is now offered on every page rather than
   only where the directory-listing heuristic fires, which missed many listing
   styles (S3 browsers, Caddy, h5ai, themed indexes). Detection now only controls

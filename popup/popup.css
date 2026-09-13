@@ -384,6 +384,22 @@ button.primary:disabled {
   color: #fff;
 }
 
+.stop-scan-btn {
+  white-space: nowrap;
+  border-color: var(--retry-border);
+  background: var(--retry-bg);
+  color: var(--retry-text);
+}
+
+.stop-scan-btn:hover {
+  background: var(--retry-border);
+}
+
+.stop-scan-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .scan-opt {
   display: flex;
   align-items: center;
@@ -459,10 +475,29 @@ button.primary:disabled {
 .tree-toggle {
   flex-shrink: 0;
   width: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: none;
   text-align: center;
+  line-height: 1;
   font-size: 10px;
   color: var(--text-secondary);
+  cursor: pointer;
   transition: transform 0.15s;
+}
+
+.tree-toggle:hover {
+  background: none;
+  color: var(--text);
+}
+
+.tree-toggle:focus-visible,
+.file-checkbox:focus-visible,
+.dir-checkbox:focus-visible,
+.group-checkbox:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .tree-toggle.collapsed {

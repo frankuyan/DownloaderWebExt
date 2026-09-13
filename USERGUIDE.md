@@ -242,8 +242,8 @@ The scan bar always appears below the toolbar, on every page:
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│  [Scan Subdirectories]  Depth [5 v]  Max dirs [200 v]  │
-│  Scan status here                                      │
+│  [Scan Subdirectories] [Stop]  Depth [5 v]  Max dirs [200 v]  │
+│  Scan status here                                             │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -269,9 +269,22 @@ To scan all subdirectories:
 | **Depth** | 5 | How many levels below the current folder to walk. **All** removes the depth limit. |
 | **Max dirs** | 200 | Hard stop after this many directories, whatever the depth. The status line reports "(limit reached)" when it bites. |
 
-Both settings are remembered between sessions. Raising them on a large server
-makes scans considerably slower, since directories are fetched one at a time.
-The **Max dirs** cap is what ultimately bounds a **Depth: All** scan.
+Both settings are remembered between sessions. The **Max dirs** cap is what
+ultimately bounds a **Depth: All** scan.
+
+**Stopping a scan**
+
+While a scan runs, the other controls lock and a **Stop** button appears. Stopping
+keeps whatever has been found so far — the tree is built from the directories
+already visited, and the status line notes that the scan was stopped early. This
+is the quickest way to deal with a **Depth: All** scan that is taking longer than
+you expected.
+
+**Unreachable directories**
+
+Directories that time out, refuse the request, or return an error are skipped
+rather than failing the whole scan. The status line reports how many were
+skipped, and hovering it lists each one with the reason.
 
 **What happens during scanning:**
 - The extension follows links to subdirectories on the same server.
@@ -309,6 +322,13 @@ After a directory scan completes, files are displayed in a hierarchical tree str
 - Click the **toggle arrow** (▼/▶) or the **directory name** to expand or collapse a folder.
 - Collapsed directories hide all their contents.
 - The arrow rotates to indicate the current state.
+
+### Keyboard Access in Tree View
+
+The expand/collapse caret on each directory row is a real button: tab to it and
+press <kbd>Enter</kbd> or <kbd>Space</kbd> to open or close that folder. It
+reports its state to screen readers, and each directory checkbox is labelled
+with the folder it selects.
 
 ### Selecting Files in Tree View
 
@@ -482,11 +502,12 @@ the scan runs exactly the same way.
 
 ### Directory scan is slow or incomplete
 
-- Each subdirectory requires a separate network request, and they are fetched one at a time, so deep directory structures take a while.
+- Each subdirectory requires a separate network request. Up to 5 are fetched in parallel, but very large trees still take time.
 - Scanning stops at the configured **Depth** (default 5) and **Max dirs** (default 200). Raise either in the scan bar if results are cut short — the status line says "(limit reached)" when a cap was hit.
 - Only same-origin (same website) subdirectories are followed.
-- If the server rate-limits requests, some directories may be skipped.
+- If the server rate-limits requests, some directories may be skipped. The status line reports how many, and hovering it shows which.
 - Files whose extensions are outside the supported list are ignored; tick **All file types** to include them.
+- Use **Stop** to end a long scan and keep the partial results.
 
 ### Too many images detected
 

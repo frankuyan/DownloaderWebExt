@@ -365,6 +365,54 @@ function testScanOptionResolution() {
   assert(resolveScanOptions({ maxDirs: 0 }).maxDirs === 200, "A zero directory cap should fall back to the default");
 }
 
+async function testConcurrencyHelper() {
+  const { context } = runContent();
+  const { mapWithConcurrency } = context;
+
+  // Slowest item first, so a result order matching the input proves the helper
+  // reorders by index rather than by completion.
+  const delays = [30, 5, 20, 1, 10];
+  const ordered = await mapWithConcurrency(delays, 3, async (ms) => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return ms;
+  });
+  assert(ordered.join(",") === delays.join(","), `Results must keep input order, got ${ordered.join(",")}`);
+
+  let inFlight = 0;
+  let peak = 0;
+  await mapWithConcurrency(Array.from({ length: 12 }, (_, i) => i), 4, async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight -= 1;
+  });
+  assert(peak <= 4, `Concurrency limit exceeded: peak was ${peak}`);
+  assert(peak === 4, `The limit should be saturated, peak was ${peak}`);
+
+  const empty = await mapWithConcurrency([], 4, async () => 1);
+  assert(empty.length === 0, "Empty input should produce no results and not hang");
+
+  // A bad limit must degrade to serial, never to zero workers silently
+  // resolving and dropping every item.
+  for (const badLimit of [undefined, null, NaN, 0, -3, "5", 2.5]) {
+    const out = await mapWithConcurrency([1, 2, 3], badLimit, async (n) => n * 2);
+    assert(
+      out.join(",") === "2,4,6",
+      `A limit of ${String(badLimit)} must still process every item, got ${out.join(",")}`
+    );
+  }
+}
+
+function testConcurrencyOption() {
+  const { context } = runContent();
+  const { resolveScanOptions } = context;
+
+  assert(resolveScanOptions({}).concurrency === 5, "Concurrency should default to 5");
+  assert(resolveScanOptions({ concurrency: 2 }).concurrency === 2, "An explicit concurrency should be honoured");
+  assert(resolveScanOptions({ concurrency: 500 }).concurrency === 16, "Concurrency should be clamped so the crawler cannot hammer a server");
+  assert(resolveScanOptions({ concurrency: 0 }).concurrency === 5, "Invalid concurrency should fall back to the default");
+}
+
 async function main() {
   testBackgroundPathSanitization();
   testBackgroundPathTraversalIsStripped();
@@ -373,6 +421,8 @@ async function main() {
   testCategoryListsStayInSync();
   testExtensionFiltering();
   testScanOptionResolution();
+  testConcurrencyOption();
+  await testConcurrencyHelper();
   await testBackgroundConcurrency();
   await testBackgroundAppendsDownloadsWhileBusy();
   await testBackgroundResumesAfterWorkerRestart();
