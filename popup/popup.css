@@ -335,31 +335,89 @@ button.primary:disabled {
 /* Scan Subdirectories bar */
 .scan-dir-bar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   margin-bottom: 10px;
   padding: 6px 8px;
-  background: var(--scan-bg);
-  border: 1px solid var(--scan-border);
+  background: var(--hover);
+  border: 1px solid var(--border-light);
   border-radius: 6px;
 }
 
+/* Tinted only when the page looks like a directory listing; the bar itself is
+   always shown so the crawler stays reachable when detection misses. */
+.scan-dir-bar.suggested {
+  background: var(--scan-bg);
+  border-color: var(--scan-border);
+}
+
+.scan-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .scan-dir-btn {
+  white-space: nowrap;
+}
+
+.scan-dir-bar.suggested .scan-dir-btn {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
   font-weight: 600;
-  white-space: nowrap;
 }
 
-.scan-dir-btn:hover {
+.scan-dir-bar.suggested .scan-dir-btn:hover {
   background: var(--accent-hover);
 }
 
 .scan-dir-btn:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.scan-dir-bar.suggested .scan-dir-btn:disabled {
   background: var(--accent-disabled);
   border-color: var(--accent-disabled);
+  color: #fff;
+}
+
+.scan-opt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
   cursor: default;
+}
+
+.scan-select {
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  background: var(--input-bg);
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+}
+
+.all-types-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.all-types-label input[type="checkbox"] {
+  cursor: pointer;
+  margin: 0;
 }
 
 .scan-status {

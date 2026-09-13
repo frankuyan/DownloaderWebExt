@@ -38,7 +38,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The popup reconnects to the background worker if its port was dropped, and
   reports a failure instead of throwing when it cannot be reached.
 
+### Added
+- The **Scan Subdirectories** button is now offered on every page rather than
+  only where the directory-listing heuristic fires, which missed many listing
+  styles (S3 browsers, Caddy, h5ai, themed indexes). Detection now only controls
+  whether the bar is highlighted.
+- Crawl **Depth** (1-10 or unlimited) and **Max dirs** (50-5000) are selectable
+  in the scan bar and remembered between sessions. Depth was previously fixed at
+  5 with no way to change it, and the directory cap was fixed at 200.
+- An **All file types** option collects extensions outside the supported list,
+  for file servers hosting formats the extension does not know about. Pages and
+  page assets stay excluded so ordinary browsing is unaffected.
+
 ### Changed
+- The supported extension list grew from 16 to roughly 70, adding archives and
+  disk images, more audio/video formats, data files, installers, e-books and
+  fonts.
+- Files are now grouped by family (Documents, Spreadsheets, Images, Archives,
+  Data, Installers, Fonts, ...) instead of by individual extension, which would
+  otherwise have produced dozens of one-type groups.
 - Chrome and Firefox packages now use separate manifests so each browser gets
   the correct MV3 background declaration.
 - Chrome package manifest no longer includes Firefox-specific Gecko metadata.

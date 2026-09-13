@@ -281,11 +281,98 @@ async function testDoneMessageCarriesBatchTotal() {
   assert(done.completed === 1, `Done message should report completions, got ${done.completed}`);
 }
 
+// Top-level `const` bindings do not land on a vm context, and popup.js cannot be
+// executed here at all (it needs a DOM), so these literals are read out of the
+// source to check the two lists stay aligned.
+function extractLiteral(source, name, open, close) {
+  const marker = `const ${name} = ${open}`;
+  const start = source.indexOf(marker);
+  assert(start !== -1, `Could not find ${name}`);
+
+  const literalStart = start + marker.length - 1;
+  let depth = 0;
+  for (let i = literalStart; i < source.length; i++) {
+    if (source[i] === open) depth++;
+    else if (source[i] === close) {
+      depth--;
+      if (depth === 0) {
+        return vm.runInNewContext(`(${source.slice(literalStart, i + 1)})`);
+      }
+    }
+  }
+  throw new Error(`Unterminated ${name} literal`);
+}
+
+function testCategoryListsStayInSync() {
+  const contentSource = fs.readFileSync("content.js", "utf8");
+  const popupSource = fs.readFileSync("popup/popup.js", "utf8");
+  const groups = extractLiteral(contentSource, "EXTENSION_GROUPS", "{", "}");
+  const categories = extractLiteral(popupSource, "CATEGORIES", "{", "}");
+  const order = extractLiteral(popupSource, "CATEGORY_ORDER", "[", "]");
+  const icons = extractLiteral(popupSource, "CATEGORY_ICONS", "{", "}");
+
+  const contentExts = Object.values(groups).flat().sort();
+  const popupExts = Object.values(categories).flat().sort();
+  assert(
+    contentExts.join(",") === popupExts.join(","),
+    "content.js EXTENSION_GROUPS and popup CATEGORIES must cover the same extensions"
+  );
+
+  const duplicates = popupExts.filter((ext, i) => popupExts[i - 1] === ext);
+  assert(duplicates.length === 0, `An extension is in two categories: ${duplicates.join(",")}`);
+
+  for (const cat of Object.keys(categories)) {
+    assert(order.includes(cat), `CATEGORY_ORDER is missing ${cat}`);
+    assert(icons[cat], `CATEGORY_ICONS is missing ${cat}`);
+  }
+  assert(order.includes("Other") && icons.Other, "The Other fallback category must be ordered and have an icon");
+}
+
+function testExtensionFiltering() {
+  const { context } = runContent();
+  const { isDownloadableExtension } = context;
+
+  assert(isDownloadableExtension("pdf", false), "Allowlisted extensions should be collected");
+  assert(isDownloadableExtension("iso", false), "The broadened allowlist should include archives/disk images");
+  assert(!isDownloadableExtension("bin", false), "Unlisted extensions should be skipped by default");
+  assert(!isDownloadableExtension(null, false), "A missing extension is never downloadable");
+
+  assert(isDownloadableExtension("bin", true), "All-types mode should accept unlisted extensions");
+  assert(!isDownloadableExtension("html", true), "All-types mode must still skip pages");
+  assert(!isDownloadableExtension("php", true), "All-types mode must still skip server-rendered pages");
+  assert(!isDownloadableExtension("css", true), "All-types mode must still skip page assets");
+  assert(!isDownloadableExtension(null, true), "A missing extension is never downloadable");
+}
+
+function testScanOptionResolution() {
+  const { context } = runContent();
+  const { resolveScanOptions } = context;
+
+  const defaults = resolveScanOptions({});
+  assert(defaults.maxDepth === 5, `Depth should default to 5, got ${defaults.maxDepth}`);
+  assert(defaults.maxDirs === 200, `Directory cap should default to 200, got ${defaults.maxDirs}`);
+  assert(defaults.includeAllTypes === false, "All-types should default to off");
+
+  assert(resolveScanOptions({ maxDepth: 2 }).maxDepth === 2, "An explicit depth should be honoured");
+  assert(resolveScanOptions({ maxDepth: "all" }).maxDepth === Number.MAX_SAFE_INTEGER, "Depth 'all' should lift the limit");
+  assert(resolveScanOptions({ maxDirs: 1000 }).maxDirs === 1000, "An explicit directory cap should be honoured");
+  assert(resolveScanOptions({ includeAllTypes: true }).includeAllTypes === true, "All-types should pass through");
+
+  // Malformed values must fall back to the defaults, never to "unlimited".
+  assert(resolveScanOptions({ maxDepth: 0 }).maxDepth === 5, "Depth 0 should fall back to the default");
+  assert(resolveScanOptions({ maxDepth: -1 }).maxDepth === 5, "A negative depth should fall back to the default");
+  assert(resolveScanOptions({ maxDepth: "deep" }).maxDepth === 5, "A non-numeric depth should fall back to the default");
+  assert(resolveScanOptions({ maxDirs: 0 }).maxDirs === 200, "A zero directory cap should fall back to the default");
+}
+
 async function main() {
   testBackgroundPathSanitization();
   testBackgroundPathTraversalIsStripped();
   testFilenameLengthCaps();
   testContentHelpers();
+  testCategoryListsStayInSync();
+  testExtensionFiltering();
+  testScanOptionResolution();
   await testBackgroundConcurrency();
   await testBackgroundAppendsDownloadsWhileBusy();
   await testBackgroundResumesAfterWorkerRestart();

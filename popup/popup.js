@@ -1,34 +1,41 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
 
 // --- Constants ---
+// Keep in sync with EXTENSION_GROUPS in content.js — scripts/smoke-tests.js
+// asserts they match.
 const CATEGORIES = {
-  PDF: ["pdf"],
-  DOC: ["doc", "docx"],
-  XLS: ["xls", "xlsx"],
-  PPT: ["ppt", "pptx"],
-  TXT: ["txt"],
-  PNG: ["png"],
-  JPG: ["jpg", "jpeg"],
-  GIF: ["gif"],
-  SVG: ["svg"],
-  MP3: ["mp3"],
-  MP4: ["mp4"],
-  ZIP: ["zip"],
-  RAR: ["rar"]
-};
-
-const TYPE_ICONS = {
-  pdf: "\u{1F4C4}", doc: "\u{1F4DD}", docx: "\u{1F4DD}", txt: "\u{1F4DD}",
-  xls: "\u{1F4CA}", xlsx: "\u{1F4CA}", ppt: "\u{1F4CA}", pptx: "\u{1F4CA}",
-  png: "\u{1F5BC}", jpg: "\u{1F5BC}", jpeg: "\u{1F5BC}", gif: "\u{1F5BC}", svg: "\u{1F5BC}",
-  mp3: "\u{1F3B5}", mp4: "\u{1F3AC}", zip: "\u{1F4E6}", rar: "\u{1F4E6}"
+  Documents: ["pdf", "doc", "docx", "odt", "rtf", "txt", "md", "epub", "mobi", "djvu"],
+  Spreadsheets: ["xls", "xlsx", "xlsm", "ods", "csv", "tsv"],
+  Presentations: ["ppt", "pptx", "odp"],
+  Images: ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "tiff", "tif", "ico", "heic", "avif"],
+  Audio: ["mp3", "wav", "flac", "aac", "ogg", "oga", "m4a", "wma", "opus", "aiff"],
+  Video: ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg"],
+  Archives: ["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "iso", "dmg"],
+  Data: ["json", "xml", "yaml", "yml", "sql", "db", "sqlite", "parquet", "log"],
+  Installers: ["exe", "msi", "deb", "rpm", "pkg", "apk", "appimage"],
+  Fonts: ["ttf", "otf", "woff", "woff2"]
 };
 
 const CATEGORY_ORDER = [
-  "PDF", "DOC", "XLS", "PPT", "TXT",
-  "PNG", "JPG", "GIF", "SVG",
-  "MP3", "MP4", "ZIP", "RAR", "Other"
+  "Documents", "Spreadsheets", "Presentations", "Images", "Audio", "Video",
+  "Archives", "Data", "Installers", "Fonts", "Other"
 ];
+
+const CATEGORY_ICONS = {
+  Documents: "\u{1F4C4}",
+  Spreadsheets: "\u{1F4CA}",
+  Presentations: "\u{1F4CA}",
+  Images: "\u{1F5BC}",
+  Audio: "\u{1F3B5}",
+  Video: "\u{1F3AC}",
+  Archives: "\u{1F4E6}",
+  Data: "\u{1F5C4}",
+  Installers: "\u2699",
+  Fonts: "\u{1F524}",
+  Other: "\u{1F4CE}"
+};
+
+const DEFAULT_SCAN_SETTINGS = { includeAllTypes: false, maxDepth: 5, maxDirs: 200 };
 
 // --- State ---
 let allFiles = [];
@@ -37,6 +44,7 @@ let isTreeMode = false;
 let downloadPort = null;
 let typePreferences = {};
 let activeTabId = null;
+let scanSettings = { ...DEFAULT_SCAN_SETTINGS };
 // Selected files keyed by URL. Kept outside the DOM so filtering or sorting —
 // which rebuilds the list — never silently drops a selection.
 const selection = new Map();
@@ -58,6 +66,9 @@ const progressContainer = document.getElementById("downloadProgress");
 const progressBar = document.getElementById("progressBar");
 const progressText = document.getElementById("progressText");
 const retryBtn = document.getElementById("retryBtn");
+const includeAllTypesEl = document.getElementById("includeAllTypes");
+const scanDepthEl = document.getElementById("scanDepth");
+const scanMaxDirsEl = document.getElementById("scanMaxDirs");
 
 // --- Utility ---
 function getCategoryForType(type) {
@@ -65,6 +76,10 @@ function getCategoryForType(type) {
     if (types.includes(type)) return cat;
   }
   return "Other";
+}
+
+function getIconForType(type) {
+  return CATEGORY_ICONS[getCategoryForType(type)] || CATEGORY_ICONS.Other;
 }
 
 function syncSelection(cb) {
@@ -117,11 +132,32 @@ function decodePath(path) {
 // --- Type Preferences (storage API) ---
 async function loadPreferences() {
   try {
-    const data = await api.storage.local.get("typePreferences");
+    const data = await api.storage.local.get(["typePreferences", "scanSettings"]);
     typePreferences = data.typePreferences || {};
+    scanSettings = { ...DEFAULT_SCAN_SETTINGS, ...(data.scanSettings || {}) };
   } catch {
     typePreferences = {};
+    scanSettings = { ...DEFAULT_SCAN_SETTINGS };
   }
+}
+
+function saveScanSettings() {
+  api.storage.local.set({ scanSettings }).catch(() => {});
+}
+
+// Assigning a value with no matching <option> leaves the select blank, so a
+// stored setting from an older build falls back to the default instead.
+function setSelectValue(el, value, fallback) {
+  el.value = String(value);
+  if (!el.value) el.value = String(fallback);
+}
+
+function applyScanSettingsToControls() {
+  includeAllTypesEl.checked = scanSettings.includeAllTypes;
+  setSelectValue(scanDepthEl, scanSettings.maxDepth, DEFAULT_SCAN_SETTINGS.maxDepth);
+  setSelectValue(scanMaxDirsEl, scanSettings.maxDirs, DEFAULT_SCAN_SETTINGS.maxDirs);
+  scanSettings.maxDepth = scanDepthEl.value === "all" ? "all" : Number(scanDepthEl.value);
+  scanSettings.maxDirs = Number(scanMaxDirsEl.value);
 }
 
 function savePreference(category, checked) {
@@ -204,7 +240,7 @@ function renderFiles(filter = "") {
 
       const icon = document.createElement("span");
       icon.className = "file-icon";
-      icon.textContent = TYPE_ICONS[file.type] || "\u{1F4CE}";
+      icon.textContent = getIconForType(file.type);
 
       const name = document.createElement("span");
       name.className = "file-name";
@@ -306,7 +342,7 @@ function renderTreeNode(node, depth, filter) {
 
     const icon = document.createElement("span");
     icon.className = "file-icon";
-    icon.textContent = TYPE_ICONS[node.ext] || "\u{1F4CE}";
+    icon.textContent = getIconForType(node.ext);
 
     const name = document.createElement("span");
     name.className = "file-name";
@@ -490,30 +526,49 @@ function showDownloadDone({ completed, total, failed }) {
 // --- Scan Workflow ---
 
 async function scanActiveTab() {
+  await loadPreferences();
+  applyScanSettingsToControls();
+  await runPageScan();
+}
+
+async function runPageScan() {
+  const scanMessage = { action: "scanPage", includeAllTypes: scanSettings.includeAllTypes };
+  let isDirectory = false;
+
+  loadingEl.classList.remove("hidden");
+  isTreeMode = false;
+  treeData = null;
+
   try {
     const [tab] = await api.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab.id;
 
     let response;
     try {
-      response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
+      response = await api.tabs.sendMessage(tab.id, scanMessage);
     } catch {
       await api.scripting.executeScript({
         target: { tabId: tab.id },
         files: ["/content.js"]
       });
-      response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
+      response = await api.tabs.sendMessage(tab.id, scanMessage);
     }
     allFiles = response?.files || response || [];
-    const isDirectory = response?.isDirectory || false;
-
-    if (isDirectory) scanDirBar.classList.remove("hidden");
+    isDirectory = response?.isDirectory || false;
   } catch (err) {
     console.error("Scan failed:", err);
     allFiles = [];
   }
 
   loadingEl.classList.add("hidden");
+
+  // The crawler works on any page that links to same-origin subdirectories, so
+  // the button is always offered. Detection only decides whether it is
+  // highlighted, since the heuristic misses many non-Apache listing styles.
+  scanDirBar.classList.remove("hidden");
+  scanDirBar.classList.toggle("suggested", isDirectory);
+  scanDirBtn.textContent = "Scan Subdirectories";
+  scanDirBtn.disabled = false;
 
   if (allFiles.length > 0) {
     badgeEl.textContent = allFiles.length;
@@ -525,10 +580,9 @@ async function scanActiveTab() {
     setBadge(0);
   }
 
-  await loadPreferences();
   selection.clear();
   applyTypePreferences();
-  renderFiles();
+  renderFiles(searchEl.value);
 }
 
 function startDirectoryScan() {
@@ -589,7 +643,12 @@ function startDirectoryScan() {
     }
   });
 
-  port.postMessage({ action: "scanDirectory" });
+  port.postMessage({
+    action: "scanDirectory",
+    maxDepth: scanSettings.maxDepth,
+    maxDirs: scanSettings.maxDirs,
+    includeAllTypes: scanSettings.includeAllTypes
+  });
 }
 
 // --- Event Listeners ---
@@ -604,6 +663,29 @@ sortSelect.addEventListener("change", () => render(searchEl.value));
 
 // Directory scan
 scanDirBtn.addEventListener("click", startDirectoryScan);
+
+scanDepthEl.addEventListener("change", () => {
+  scanSettings.maxDepth = scanDepthEl.value === "all" ? "all" : Number(scanDepthEl.value);
+  saveScanSettings();
+});
+
+scanMaxDirsEl.addEventListener("change", () => {
+  scanSettings.maxDirs = Number(scanMaxDirsEl.value);
+  saveScanSettings();
+});
+
+// Changing the type filter invalidates whatever is on screen, so re-scan with
+// the new setting — the directory tree if there is one, otherwise the page.
+includeAllTypesEl.addEventListener("change", () => {
+  scanSettings.includeAllTypes = includeAllTypesEl.checked;
+  saveScanSettings();
+
+  if (isTreeMode && treeData) {
+    startDirectoryScan();
+  } else {
+    runPageScan();
+  }
+});
 
 // Select all / deselect all
 document.getElementById("selectAll").addEventListener("click", () => {

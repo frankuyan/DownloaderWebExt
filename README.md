@@ -47,28 +47,42 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 - **Keyboard shortcuts** — `Ctrl+A` select all, `Ctrl+D` download, `/` focus search, `Escape` clear filter.
 - **Filename sanitization** — Strips common prefixes (e.g., Weebly's "Download file:") and replaces characters invalid on Windows/macOS.
 - **File count badge** — Shows how many downloadable files were found.
-- **Directory scanning** — Recursively scans subdirectories on file server index pages with an interactive tree view.
+- **Directory scanning** — Recursively walks subdirectories from any page with same-origin folder links and lists what it finds in an interactive tree view, with configurable depth and directory limits.
 - **Cross-browser** — Works in both Chrome (MV3) and Firefox (109+).
 
 ---
 
 ## Supported File Types
 
-| Category    | Extensions           |
-|-------------|----------------------|
-| PDF         | PDF                  |
-| DOC         | DOC, DOCX            |
-| XLS         | XLS, XLSX            |
-| PPT         | PPT, PPTX            |
-| TXT         | TXT                  |
-| PNG         | PNG                  |
-| JPG         | JPG, JPEG            |
-| GIF         | GIF                  |
-| SVG         | SVG                  |
-| MP3         | MP3                  |
-| MP4         | MP4                  |
-| ZIP         | ZIP                  |
-| RAR         | RAR                  |
+Files are grouped by family:
+
+| Category      | Extensions                                                      |
+|---------------|-----------------------------------------------------------------|
+| Documents     | PDF, DOC, DOCX, ODT, RTF, TXT, MD, EPUB, MOBI, DJVU              |
+| Spreadsheets  | XLS, XLSX, XLSM, ODS, CSV, TSV                                   |
+| Presentations | PPT, PPTX, ODP                                                   |
+| Images        | PNG, JPG, JPEG, GIF, SVG, WEBP, BMP, TIFF, TIF, ICO, HEIC, AVIF  |
+| Audio         | MP3, WAV, FLAC, AAC, OGG, OGA, M4A, WMA, OPUS, AIFF              |
+| Video         | MP4, MKV, AVI, MOV, WMV, FLV, WEBM, M4V, MPG, MPEG               |
+| Archives      | ZIP, RAR, 7Z, TAR, GZ, TGZ, BZ2, XZ, ZST, ISO, DMG               |
+| Data          | JSON, XML, YAML, YML, SQL, DB, SQLITE, PARQUET, LOG              |
+| Installers    | EXE, MSI, DEB, RPM, PKG, APK, APPIMAGE                           |
+| Fonts         | TTF, OTF, WOFF, WOFF2                                            |
+
+### All file types
+
+Tick **All file types** in the popup to collect every extension rather than
+just the list above — useful on file servers hosting formats the extension
+does not know about. Anything that falls outside the table is grouped under
+**Other**.
+
+Pages and page assets are always excluded, even in this mode (`html`, `htm`,
+`xhtml`, `shtml`, `php`, `asp`, `aspx`, `jsp`, `cgi`, `css`, `js`, `mjs`,
+`cjs`, `map`). Without that exclusion every navigation link on an ordinary
+page would be listed as a downloadable file.
+
+Toggling the checkbox re-runs the current scan — the directory tree if one is
+open, otherwise the page scan.
 
 ---
 
@@ -336,28 +350,26 @@ To cut a release:
 
 File extensions are defined in two places:
 
-1. **`content.js`** — The `SUPPORTED_EXTENSIONS` array at the top of the file. Add or remove extensions here to change what the page scanner detects.
+1. **`content.js`** — The `EXTENSION_GROUPS` object at the top of the file. `SUPPORTED_EXTENSIONS` is derived from it, and it is what the page scanner and the directory crawler detect.
 
-2. **`popup/popup.js`** — The `CATEGORIES` object maps category names to arrays of extensions. Add new extensions to the appropriate category, or create a new category. Also update `TYPE_ICONS` to assign an emoji icon for any new extension.
+2. **`popup/popup.js`** — The `CATEGORIES` object maps display names to the same extensions. A new category also needs an entry in `CATEGORY_ORDER` (display order) and `CATEGORY_ICONS` (emoji).
 
-**Example — adding `.csv` support:**
+The two lists must cover exactly the same extensions, with no extension in two
+categories; `npm test` fails if they drift apart.
+
+**Example — adding `.heic` to an existing category:**
 
 ```js
 // content.js
-const SUPPORTED_EXTENSIONS = [
-  // ... existing extensions ...
-  "csv"
-];
+const EXTENSION_GROUPS = {
+  // ... other groups ...
+  images: [/* ... */, "heic"]
+};
 
 // popup/popup.js
 const CATEGORIES = {
-  // ... existing type groups ...
-  CSV: ["csv"],
-};
-
-const TYPE_ICONS = {
-  // ... existing icons ...
-  csv: "📊"
+  // ... other categories ...
+  Images: [/* ... */, "heic"]
 };
 ```
 

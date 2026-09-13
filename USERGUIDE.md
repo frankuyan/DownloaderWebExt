@@ -234,25 +234,44 @@ A directory listing is a web page that shows the contents of a folder on a web s
 - University and research institution file repositories
 - Software download mirrors
 
-When File Downloader detects that the current page is a directory listing, it enables an additional feature: **subdirectory scanning**.
+When File Downloader detects that the current page is a directory listing, it highlights the **subdirectory scanning** bar.
 
 ### Scanning Subdirectories
 
-When a directory listing is detected, a blue bar appears below the toolbar:
+The scan bar always appears below the toolbar, on every page:
 
 ```
-┌─────────────────────────────────────────────┐
-│  [Scan Subdirectories]    Scan status here   │
-└─────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  [Scan Subdirectories]  Depth [5 v]  Max dirs [200 v]  │
+│  Scan status here                                      │
+└────────────────────────────────────────────────────────┘
 ```
+
+It is tinted blue when the page is recognised as a directory listing. On other
+pages it stays neutral but remains clickable — the crawler works on any page
+that links to same-origin subdirectories, and the detection heuristic does not
+recognise every listing style (it looks for an "Index of" title, or a
+`<pre>`/`<table>` layout made mostly of relative links). If a file server you
+use is not detected, click the button anyway.
 
 To scan all subdirectories:
 
-1. Click the **Scan Subdirectories** button.
-2. The extension begins recursively visiting each subdirectory linked from the page.
-3. A real-time status message shows how many directories have been explored.
-4. Scanning continues up to **5 levels deep** to prevent excessive crawling.
+1. Choose a **Depth** (1-10, or **All**) and a **Max dirs** cap (50-5000).
+2. Click the **Scan Subdirectories** button.
+3. The extension begins recursively visiting each subdirectory linked from the page.
+4. A real-time status message shows how many directories have been explored.
 5. When complete, the view switches from the flat file list to an interactive **tree view**.
+
+**Depth and Max dirs**
+
+| Setting | Default | What it does |
+|---|---|---|
+| **Depth** | 5 | How many levels below the current folder to walk. **All** removes the depth limit. |
+| **Max dirs** | 200 | Hard stop after this many directories, whatever the depth. The status line reports "(limit reached)" when it bites. |
+
+Both settings are remembered between sessions. Raising them on a large server
+makes scans considerably slower, since directories are fetched one at a time.
+The **Max dirs** cap is what ultimately bounds a **Depth: All** scan.
 
 **What happens during scanning:**
 - The extension follows links to subdirectories on the same server.
@@ -450,20 +469,24 @@ Some pages block extensions from injecting scripts due to strict Content Securit
 
 There is no workaround for this — it's a security measure by the website.
 
-### Scan Subdirectories button doesn't appear
+### Scan Subdirectories button isn't highlighted
 
-The button only appears when the extension detects that the current page is a directory listing. Detection is based on:
+The button is always present. It is only tinted blue when the extension
+recognises the page as a directory listing, based on:
 - The page title containing "Index of"
 - The page structure having `<pre>` or `<table>` elements with a high ratio of relative links
 
-If you're on a directory listing but the button doesn't appear, the page may use a non-standard format that the heuristic doesn't recognize.
+Plenty of listing styles fail both checks (S3 browsers, Caddy's file server,
+h5ai, themed indexes). That affects the highlight only — click the button and
+the scan runs exactly the same way.
 
 ### Directory scan is slow or incomplete
 
-- Each subdirectory requires a separate network request, so deep directory structures take time.
-- Scanning stops at **5 levels deep** to prevent excessive crawling.
+- Each subdirectory requires a separate network request, and they are fetched one at a time, so deep directory structures take a while.
+- Scanning stops at the configured **Depth** (default 5) and **Max dirs** (default 200). Raise either in the scan bar if results are cut short — the status line says "(limit reached)" when a cap was hit.
 - Only same-origin (same website) subdirectories are followed.
 - If the server rate-limits requests, some directories may be skipped.
+- Files whose extensions are outside the supported list are ignored; tick **All file types** to include them.
 
 ### Too many images detected
 
