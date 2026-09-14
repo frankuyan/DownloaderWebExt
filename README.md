@@ -148,6 +148,7 @@ DownloaderWebExt/
 │   ├── validate.sh        # Runs manifest, syntax, and smoke-test checks
 │   ├── validate.js        # Manifest and required-file validation
 │   └── smoke-tests.js     # Dependency-free runtime smoke tests
+├── test/browser/           # Optional Playwright suites (see test/browser/README.md)
 └── README.md              # This file
 ```
 
@@ -322,11 +323,26 @@ Run validation before packaging:
 npm run validate
 ```
 
-This checks both manifests, runs JavaScript syntax checks, and executes dependency-free smoke tests for queue concurrency and filename/path helpers. The smoke tests can also be run directly:
+This checks both manifests, runs JavaScript syntax checks, and executes dependency-free smoke tests for queue concurrency, download retry classification, and filename/path helpers. The smoke tests can also be run directly:
 
 ```
 npm test
 ```
+
+### Browser-driven tests (optional)
+
+`popup/popup.js` needs a DOM, so it is covered by a separate Playwright suite
+that drives the real popup and content script in Chromium — selection behaviour,
+the directory-scan controls, listing detection, and the crawler over real HTTP:
+
+```
+npm run test:ui
+```
+
+Playwright is intentionally **not** a package dependency, so `npm test` and
+`npm run validate` keep working with nothing installed. If Playwright is
+missing, `npm run test:ui` prints setup instructions and exits with status 2
+instead of failing. See [`test/browser/README.md`](test/browser/README.md).
 
 ### Building for Submission
 
@@ -344,7 +360,7 @@ To cut a release:
 
 1. Update `version` in `manifest.json`, `manifest.firefox.json`, and `package.json` (keep them in sync).
 2. Add an entry to `CHANGELOG.md`.
-3. Run `npm run validate`.
+3. Run `npm run validate` (and `npm run test:ui` if Playwright is available).
 4. Run `npm run package`.
 5. Upload the matching zip to the [Chrome Web Store Dashboard](https://chrome.google.com/webstore/devconsole) or [Firefox AMO](https://addons.mozilla.org/developers/).
 
