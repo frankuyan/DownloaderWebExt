@@ -37,7 +37,9 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 - **Sort** — Sort files by name (A-Z or Z-A) within each group via dropdown.
 - **Queued downloads** — Downloads are processed in a queue with up to 3 concurrent downloads, preventing browser throttling.
 - **Download progress** — Real-time progress bar showing completed, active, and queued download counts.
-- **Retry failed** — Failed downloads can be retried with a single click.
+- **Automatic retries** — Downloads interrupted by a temporary network or server problem are re-queued and retried up to three times. Cancelled downloads and permanent failures are never retried automatically.
+- **Retry failed** — Whatever is still failing can be retried with a single click.
+- **No overwrites** — Downloads use `conflictAction: "uniquify"`, so a name collision appends a counter rather than replacing a file.
 - **Subfolder support** — Optionally download files into a named subfolder within the default download directory.
 - **Copy URLs** — Copy selected file URLs to clipboard for use with external tools (wget, curl, etc.).
 - **Duplicate filename detection** — Files with identical display names are automatically numbered (e.g., `report (2).pdf`).
@@ -47,28 +49,42 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 - **Keyboard shortcuts** — `Ctrl+A` select all, `Ctrl+D` download, `/` focus search, `Escape` clear filter.
 - **Filename sanitization** — Strips common prefixes (e.g., Weebly's "Download file:") and replaces characters invalid on Windows/macOS.
 - **File count badge** — Shows how many downloadable files were found.
-- **Directory scanning** — Recursively scans subdirectories on file server index pages with an interactive tree view.
+- **Directory scanning** — Walks subdirectories breadth-first from any page with same-origin folder links and lists what it finds in an interactive tree view, with configurable depth and directory limits. Directories are fetched in parallel, a running scan can be stopped while keeping partial results, and a scan that hit a limit can be continued from where it stopped rather than restarted.
 - **Cross-browser** — Works in both Chrome (MV3) and Firefox (109+).
 
 ---
 
 ## Supported File Types
 
-| Category    | Extensions           |
-|-------------|----------------------|
-| PDF         | PDF                  |
-| DOC         | DOC, DOCX            |
-| XLS         | XLS, XLSX            |
-| PPT         | PPT, PPTX            |
-| TXT         | TXT                  |
-| PNG         | PNG                  |
-| JPG         | JPG, JPEG            |
-| GIF         | GIF                  |
-| SVG         | SVG                  |
-| MP3         | MP3                  |
-| MP4         | MP4                  |
-| ZIP         | ZIP                  |
-| RAR         | RAR                  |
+Files are grouped by family:
+
+| Category      | Extensions                                                      |
+|---------------|-----------------------------------------------------------------|
+| Documents     | PDF, DOC, DOCX, ODT, RTF, TXT, MD, EPUB, MOBI, DJVU              |
+| Spreadsheets  | XLS, XLSX, XLSM, ODS, CSV, TSV                                   |
+| Presentations | PPT, PPTX, ODP                                                   |
+| Images        | PNG, JPG, JPEG, GIF, SVG, WEBP, BMP, TIFF, TIF, ICO, HEIC, AVIF  |
+| Audio         | MP3, WAV, FLAC, AAC, OGG, OGA, M4A, WMA, OPUS, AIFF              |
+| Video         | MP4, MKV, AVI, MOV, WMV, FLV, WEBM, M4V, MPG, MPEG               |
+| Archives      | ZIP, RAR, 7Z, TAR, GZ, TGZ, BZ2, XZ, ZST, ISO, DMG               |
+| Data          | JSON, XML, YAML, YML, SQL, DB, SQLITE, PARQUET, LOG              |
+| Installers    | EXE, MSI, DEB, RPM, PKG, APK, APPIMAGE                           |
+| Fonts         | TTF, OTF, WOFF, WOFF2                                            |
+
+### All file types
+
+Tick **All file types** in the popup to collect every extension rather than
+just the list above — useful on file servers hosting formats the extension
+does not know about. Anything that falls outside the table is grouped under
+**Other**.
+
+Pages and page assets are always excluded, even in this mode (`html`, `htm`,
+`xhtml`, `shtml`, `php`, `asp`, `aspx`, `jsp`, `cgi`, `css`, `js`, `mjs`,
+`cjs`, `map`). Without that exclusion every navigation link on an ordinary
+page would be listed as a downloadable file.
+
+Toggling the checkbox re-runs the current scan — the directory tree if one is
+open, otherwise the page scan.
 
 ---
 
@@ -132,6 +148,7 @@ DownloaderWebExt/
 │   ├── validate.sh        # Runs manifest, syntax, and smoke-test checks
 │   ├── validate.js        # Manifest and required-file validation
 │   └── smoke-tests.js     # Dependency-free runtime smoke tests
+├── test/browser/           # Optional Playwright suites (see test/browser/README.md)
 └── README.md              # This file
 ```
 
@@ -306,11 +323,26 @@ Run validation before packaging:
 npm run validate
 ```
 
-This checks both manifests, runs JavaScript syntax checks, and executes dependency-free smoke tests for queue concurrency and filename/path helpers. The smoke tests can also be run directly:
+This checks both manifests, runs JavaScript syntax checks, and executes dependency-free smoke tests for queue concurrency, download retry classification, and filename/path helpers. The smoke tests can also be run directly:
 
 ```
 npm test
 ```
+
+### Browser-driven tests (optional)
+
+`popup/popup.js` needs a DOM, so it is covered by a separate Playwright suite
+that drives the real popup and content script in Chromium — selection behaviour,
+the directory-scan controls, listing detection, and the crawler over real HTTP:
+
+```
+npm run test:ui
+```
+
+Playwright is intentionally **not** a package dependency, so `npm test` and
+`npm run validate` keep working with nothing installed. If Playwright is
+missing, `npm run test:ui` prints setup instructions and exits with status 2
+instead of failing. See [`test/browser/README.md`](test/browser/README.md).
 
 ### Building for Submission
 
@@ -328,7 +360,7 @@ To cut a release:
 
 1. Update `version` in `manifest.json`, `manifest.firefox.json`, and `package.json` (keep them in sync).
 2. Add an entry to `CHANGELOG.md`.
-3. Run `npm run validate`.
+3. Run `npm run validate` (and `npm run test:ui` if Playwright is available).
 4. Run `npm run package`.
 5. Upload the matching zip to the [Chrome Web Store Dashboard](https://chrome.google.com/webstore/devconsole) or [Firefox AMO](https://addons.mozilla.org/developers/).
 
@@ -336,28 +368,26 @@ To cut a release:
 
 File extensions are defined in two places:
 
-1. **`content.js`** — The `SUPPORTED_EXTENSIONS` array at the top of the file. Add or remove extensions here to change what the page scanner detects.
+1. **`content.js`** — The `EXTENSION_GROUPS` object at the top of the file. `SUPPORTED_EXTENSIONS` is derived from it, and it is what the page scanner and the directory crawler detect.
 
-2. **`popup/popup.js`** — The `CATEGORIES` object maps category names to arrays of extensions. Add new extensions to the appropriate category, or create a new category. Also update `TYPE_ICONS` to assign an emoji icon for any new extension.
+2. **`popup/popup.js`** — The `CATEGORIES` object maps display names to the same extensions. A new category also needs an entry in `CATEGORY_ORDER` (display order) and `CATEGORY_ICONS` (emoji).
 
-**Example — adding `.csv` support:**
+The two lists must cover exactly the same extensions, with no extension in two
+categories; `npm test` fails if they drift apart.
+
+**Example — adding `.heic` to an existing category:**
 
 ```js
 // content.js
-const SUPPORTED_EXTENSIONS = [
-  // ... existing extensions ...
-  "csv"
-];
+const EXTENSION_GROUPS = {
+  // ... other groups ...
+  images: [/* ... */, "heic"]
+};
 
 // popup/popup.js
 const CATEGORIES = {
-  // ... existing type groups ...
-  CSV: ["csv"],
-};
-
-const TYPE_ICONS = {
-  // ... existing icons ...
-  csv: "📊"
+  // ... other categories ...
+  Images: [/* ... */, "heic"]
 };
 ```
 

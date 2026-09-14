@@ -32,6 +32,10 @@
       Save to subfolder:
       <input type="text" id="subfolder" placeholder="optional" class="subfolder-input">
     </label>
+    <label class="all-types-label" title="Collect every file type, not just the common document, image, media and archive formats">
+      <input type="checkbox" id="includeAllTypes">
+      All file types
+    </label>
   </div>
 
   <div id="downloadProgress" class="download-progress hidden">
@@ -45,7 +49,31 @@
   </div>
 
   <div id="scanDirBar" class="scan-dir-bar hidden">
-    <button id="scanDirBtn" class="scan-dir-btn">Scan Subdirectories</button>
+    <div class="scan-dir-row">
+      <button id="scanDirBtn" class="scan-dir-btn">Scan Subdirectories</button>
+      <button id="stopScanBtn" class="stop-scan-btn hidden">Stop</button>
+      <button id="continueScanBtn" class="continue-scan-btn hidden" title="Carry on from the directories this scan did not reach">Continue</button>
+      <label class="scan-opt" title="How many levels of subdirectories to walk">
+        Depth
+        <select id="scanDepth" class="scan-select">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="5" selected>5</option>
+          <option value="10">10</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label class="scan-opt" title="Stop after visiting this many directories">
+        Max dirs
+        <select id="scanMaxDirs" class="scan-select">
+          <option value="50">50</option>
+          <option value="200" selected>200</option>
+          <option value="1000">1000</option>
+          <option value="5000">5000</option>
+        </select>
+      </label>
+    </div>
     <span id="scanStatus" class="scan-status hidden"></span>
   </div>
 

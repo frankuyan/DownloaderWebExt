@@ -30,13 +30,17 @@ function runBackground(scriptOverrides = {}) {
       download(file) {
         const id = nextId++;
         started.push({ id, file });
+        if (scriptOverrides.downloadNeverResolves) return new Promise(() => {});
         return new Promise((resolve) => setTimeout(() => resolve(id), 20));
       },
       onChanged: {
         addListener(fn) {
           changedListener = fn;
         }
-      }
+      },
+      ...(scriptOverrides.searchResults
+        ? { search: async ({ id }) => scriptOverrides.searchResults[id] || [] }
+        : {})
     },
     runtime: {
       onConnect: {
@@ -134,6 +138,114 @@ async function testBackgroundAppendsDownloadsWhileBusy() {
   assert(started[4].file.filename === "added-0.txt", "Appended files should start after the existing queue");
 }
 
+async function testDownloadsNeverOverwrite() {
+  const { port, started } = runBackground();
+  port.onMessage.listener({
+    action: "download",
+    files: [{ url: "https://example.test/a.txt", filename: "a.txt" }]
+  });
+  await tick(40);
+
+  assert(started.length === 1, "The file should have started");
+  assert(
+    started[0].file.conflictAction === "uniquify",
+    `Downloads must not silently overwrite; got conflictAction=${started[0].file.conflictAction}`
+  );
+}
+
+// A snapshot of session storage as it looks when the worker died mid-batch.
+function storageWithActive(active, extra = {}) {
+  const store = {
+    downloadState: {
+      queue: [], starting: [], active, completed: [], failed: [],
+      retried: 0, totalInBatch: active.length, ...extra
+    }
+  };
+  return {
+    session: {
+      async get(key) {
+        return key in store ? { [key]: store[key] } : {};
+      },
+      set(obj) {
+        Object.assign(store, obj);
+        return Promise.resolve();
+      }
+    },
+    read: () => store.downloadState
+  };
+}
+
+const ACTIVE_PAIR = [
+  [1, { url: "https://example.test/a.txt", filename: "a.txt" }],
+  [2, { url: "https://example.test/b.txt", filename: "b.txt" }]
+];
+
+async function testRestoredDownloadsAreReconciled() {
+  // Both finished while the worker was gone, so no further event will ever
+  // mention them. Without reconciliation the batch never settles.
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({
+    storage,
+    searchResults: { 1: [{ id: 1, state: "complete" }], 2: [{ id: 2, state: "interrupted" }] }
+  });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress.active === 0, `Finished downloads should no longer count as active, got ${progress.active}`);
+  assert(progress.completed === 1, `The completed download should be counted, got ${progress.completed}`);
+  assert(progress.failed === 1, `The interrupted download should be counted, got ${progress.failed}`);
+
+  const done = messages.filter((m) => m.type === "done").pop();
+  assert(done, "A batch with nothing left pending must be able to settle");
+  assert(done.total === 2, `Batch total should be preserved, got ${done.total}`);
+}
+
+async function testRestoredDownloadsStillRunningAreLeftAlone() {
+  // The worker wakes while downloads are genuinely still going; they must not
+  // be written off just because we restarted.
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({
+    storage,
+    searchResults: { 1: [{ id: 1, state: "in_progress" }], 2: [{ id: 2, state: "in_progress" }] }
+  });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress.active === 2, `Running downloads must stay active, got ${progress.active}`);
+  assert(messages.every((m) => m.type !== "done"), "A batch with running downloads must not report done");
+}
+
+async function testRestoredDownloadsTheBrowserForgotAreFailed() {
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({ storage, searchResults: { 1: [], 2: [] } });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress.active === 0, `Forgotten downloads should not stay active, got ${progress.active}`);
+  assert(progress.failed === 2, `Forgotten downloads should be retryable, got ${progress.failed}`);
+  assert(progress.completed === 0, "A download we cannot verify must not be claimed as complete");
+}
+
+async function testReconcileToleratesNoSearchApi() {
+  // downloads.search exists in both target browsers; this only guards against
+  // it being absent, which must not throw or write off live downloads.
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({ storage });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress, "Progress should still be reported without downloads.search");
+  assert(progress.active === 2, "Without a way to check, downloads are left as they were");
+}
+
 function testBackgroundPathSanitization() {
   const { context } = runBackground({ storage: {} });
 
@@ -184,11 +296,316 @@ function testContentHelpers() {
   assert(typeof messageListener === "function", "Content script should register a message listener");
 }
 
+function testBackgroundPathTraversalIsStripped() {
+  const { context } = runBackground({ storage: {} });
+  const { sanitizeDownloadPath } = context;
+
+  assert(sanitizeDownloadPath("../../etc/passwd") === "etc/passwd", "Parent-directory segments should be dropped");
+  assert(sanitizeDownloadPath("a/./b/../c.pdf") === "a/b/c.pdf", "Dot segments should be dropped from the middle of a path");
+  assert(sanitizeDownloadPath("..") === "download", "A path made only of traversal segments should fall back");
+  assert(sanitizeDownloadPath("report.pdf.") === "report.pdf", "Trailing dots, which Windows rejects, should be stripped");
+  assert(sanitizeDownloadPath("report.pdf ") === "report.pdf", "Trailing spaces, which Windows rejects, should be stripped");
+  assert(sanitizeDownloadPath(".gitignore") === ".gitignore", "Leading dots should be preserved");
+}
+
+function testFilenameLengthCaps() {
+  const { context: background } = runBackground({ storage: {} });
+  const { context: content } = runContent();
+
+  const longName = `${"a".repeat(400)}.pdf`;
+
+  const fromContent = content.sanitizeFilename(longName);
+  assert(fromContent.length <= 180, `Content filenames should be capped, got ${fromContent.length}`);
+  assert(fromContent.endsWith(".pdf"), "Truncation should preserve the extension");
+
+  const fromBackground = background.sanitizeDownloadPath(longName);
+  assert(fromBackground.length <= 180, `Background filenames should be capped, got ${fromBackground.length}`);
+  assert(fromBackground.endsWith(".pdf"), "Truncation should preserve the extension");
+
+  const noExtension = "b".repeat(400);
+  assert(content.sanitizeFilename(noExtension).length === 180, "Extensionless names should be truncated to the cap");
+}
+
+// storage.session survives a service-worker restart, so a fresh worker must pick
+// the queue back up.
+function createSessionStorage() {
+  const store = {};
+  return {
+    session: {
+      async get(key) {
+        return key in store ? { [key]: store[key] } : {};
+      },
+      set(obj) {
+        Object.assign(store, obj);
+        return Promise.resolve();
+      }
+    },
+    read: () => store.downloadState
+  };
+}
+
+async function testBackgroundResumesAfterWorkerRestart() {
+  const storage = createSessionStorage();
+  const files = Array.from({ length: 5 }, (_, i) => ({
+    url: `https://example.test/${i}.txt`,
+    filename: `file-${i}.txt`
+  }));
+
+  // First worker: three downloads are mid-start when the worker is torn down.
+  const first = runBackground({ storage, downloadNeverResolves: true });
+  first.port.onMessage.listener({ action: "download", files });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert(first.started.length === 3, `Expected 3 in-flight starts, got ${first.started.length}`);
+  const saved = storage.read();
+  assert(saved.starting.length === 3, "In-flight downloads must be persisted, not held only in memory");
+  assert(saved.queue.length === 2, `Expected 2 files still queued, got ${saved.queue.length}`);
+  assert(saved.totalInBatch === 5, "Batch total should be persisted");
+
+  // Second worker boots from the persisted state and resumes on its own.
+  const second = runBackground({ storage });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert(second.started.length === 3, `Restarted worker should resume downloads, got ${second.started.length}`);
+  const resumed = second.started.map((s) => s.file.filename);
+  assert(
+    resumed.join(",") === "file-0.txt,file-1.txt,file-2.txt",
+    `Interrupted downloads should restart before the backlog, got ${resumed.join(",")}`
+  );
+}
+
+async function testDoneMessageCarriesBatchTotal() {
+  const { port, messages, changedListener } = runBackground();
+
+  port.onMessage.listener({
+    action: "download",
+    files: [{ url: "https://example.test/a.txt", filename: "a.txt" }]
+  });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  await changedListener()({ id: 1, state: { current: "complete" } });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const done = messages.find((msg) => msg.type === "done");
+  assert(done, "A settled batch should emit a done message");
+  assert(done.total === 1, `Done message should report the batch total, got ${done.total}`);
+  assert(done.completed === 1, `Done message should report completions, got ${done.completed}`);
+}
+
+// Top-level `const` bindings do not land on a vm context, and popup.js cannot be
+// executed here at all (it needs a DOM), so these literals are read out of the
+// source to check the two lists stay aligned.
+function extractLiteral(source, name, open, close) {
+  const marker = `const ${name} = ${open}`;
+  const start = source.indexOf(marker);
+  assert(start !== -1, `Could not find ${name}`);
+
+  const literalStart = start + marker.length - 1;
+  let depth = 0;
+  for (let i = literalStart; i < source.length; i++) {
+    if (source[i] === open) depth++;
+    else if (source[i] === close) {
+      depth--;
+      if (depth === 0) {
+        return vm.runInNewContext(`(${source.slice(literalStart, i + 1)})`);
+      }
+    }
+  }
+  throw new Error(`Unterminated ${name} literal`);
+}
+
+function testCategoryListsStayInSync() {
+  const contentSource = fs.readFileSync("content.js", "utf8");
+  const popupSource = fs.readFileSync("popup/popup.js", "utf8");
+  const groups = extractLiteral(contentSource, "EXTENSION_GROUPS", "{", "}");
+  const categories = extractLiteral(popupSource, "CATEGORIES", "{", "}");
+  const order = extractLiteral(popupSource, "CATEGORY_ORDER", "[", "]");
+  const icons = extractLiteral(popupSource, "CATEGORY_ICONS", "{", "}");
+
+  const contentExts = Object.values(groups).flat().sort();
+  const popupExts = Object.values(categories).flat().sort();
+  assert(
+    contentExts.join(",") === popupExts.join(","),
+    "content.js EXTENSION_GROUPS and popup CATEGORIES must cover the same extensions"
+  );
+
+  const duplicates = popupExts.filter((ext, i) => popupExts[i - 1] === ext);
+  assert(duplicates.length === 0, `An extension is in two categories: ${duplicates.join(",")}`);
+
+  for (const cat of Object.keys(categories)) {
+    assert(order.includes(cat), `CATEGORY_ORDER is missing ${cat}`);
+    assert(icons[cat], `CATEGORY_ICONS is missing ${cat}`);
+  }
+  assert(order.includes("Other") && icons.Other, "The Other fallback category must be ordered and have an icon");
+}
+
+function testExtensionFiltering() {
+  const { context } = runContent();
+  const { isDownloadableExtension } = context;
+
+  assert(isDownloadableExtension("pdf", false), "Allowlisted extensions should be collected");
+  assert(isDownloadableExtension("iso", false), "The broadened allowlist should include archives/disk images");
+  assert(!isDownloadableExtension("bin", false), "Unlisted extensions should be skipped by default");
+  assert(!isDownloadableExtension(null, false), "A missing extension is never downloadable");
+
+  assert(isDownloadableExtension("bin", true), "All-types mode should accept unlisted extensions");
+  assert(!isDownloadableExtension("html", true), "All-types mode must still skip pages");
+  assert(!isDownloadableExtension("php", true), "All-types mode must still skip server-rendered pages");
+  assert(!isDownloadableExtension("css", true), "All-types mode must still skip page assets");
+  assert(!isDownloadableExtension(null, true), "A missing extension is never downloadable");
+}
+
+function testScanOptionResolution() {
+  const { context } = runContent();
+  const { resolveScanOptions } = context;
+
+  const defaults = resolveScanOptions({});
+  assert(defaults.maxDepth === 5, `Depth should default to 5, got ${defaults.maxDepth}`);
+  assert(defaults.maxDirs === 200, `Directory cap should default to 200, got ${defaults.maxDirs}`);
+  assert(defaults.includeAllTypes === false, "All-types should default to off");
+
+  assert(resolveScanOptions({ maxDepth: 2 }).maxDepth === 2, "An explicit depth should be honoured");
+  assert(resolveScanOptions({ maxDepth: "all" }).maxDepth === Number.MAX_SAFE_INTEGER, "Depth 'all' should lift the limit");
+  assert(resolveScanOptions({ maxDirs: 1000 }).maxDirs === 1000, "An explicit directory cap should be honoured");
+  assert(resolveScanOptions({ includeAllTypes: true }).includeAllTypes === true, "All-types should pass through");
+
+  // Malformed values must fall back to the defaults, never to "unlimited".
+  assert(resolveScanOptions({ maxDepth: 0 }).maxDepth === 5, "Depth 0 should fall back to the default");
+  assert(resolveScanOptions({ maxDepth: -1 }).maxDepth === 5, "A negative depth should fall back to the default");
+  assert(resolveScanOptions({ maxDepth: "deep" }).maxDepth === 5, "A non-numeric depth should fall back to the default");
+  assert(resolveScanOptions({ maxDirs: 0 }).maxDirs === 200, "A zero directory cap should fall back to the default");
+}
+
+function testConcurrencyOption() {
+  const { context } = runContent();
+  const { resolveScanOptions } = context;
+
+  assert(resolveScanOptions({}).concurrency === 5, "Concurrency should default to 5");
+  assert(resolveScanOptions({ concurrency: 2 }).concurrency === 2, "An explicit concurrency should be honoured");
+  assert(resolveScanOptions({ concurrency: 500 }).concurrency === 16, "Concurrency should be clamped so the crawler cannot hammer a server");
+  assert(resolveScanOptions({ concurrency: 0 }).concurrency === 5, "Invalid concurrency should fall back to the default");
+}
+
+const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function startOneFile(port) {
+  port.onMessage.listener({
+    action: "download",
+    files: [{ url: "https://example.test/flaky.txt", filename: "flaky.txt" }]
+  });
+}
+
+function lastDone(messages) {
+  return messages.filter((msg) => msg.type === "done").pop();
+}
+
+async function testTransientFailuresAreRetried() {
+  const { port, started, messages, changedListener } = runBackground();
+  startOneFile(port);
+  await tick(40);
+  assert(started.length === 1, `Expected the file to start once, got ${started.length}`);
+
+  await changedListener()({ id: 1, state: { current: "interrupted" }, error: { current: "NETWORK_FAILED" } });
+  await tick(40);
+  assert(started.length === 2, "A transient network failure should be retried automatically");
+
+  await changedListener()({ id: 2, state: { current: "interrupted" }, error: { current: "SERVER_FAILED" } });
+  await tick(40);
+  assert(started.length === 3, "A second transient failure should be retried automatically");
+
+  await changedListener()({ id: 3, state: { current: "interrupted" }, error: { current: "NETWORK_TIMEOUT" } });
+  await tick(40);
+  assert(started.length === 3, `Retries must stop at MAX_ATTEMPTS, got ${started.length} starts`);
+
+  const done = lastDone(messages);
+  assert(done, "A settled batch should report done");
+  assert(done.failed.length === 1, `The exhausted file should be reported failed, got ${done.failed.length}`);
+  assert(done.retried === 2, `Expected 2 retries to be reported, got ${done.retried}`);
+  assert(done.total === 1, `Retries must not inflate the batch total, got ${done.total}`);
+  assert(done.completed === 0, "Nothing completed in this batch");
+}
+
+async function testNonTransientFailuresAreNotRetried() {
+  const cases = [
+    ["USER_CANCELED", "a user cancellation must never be re-downloaded"],
+    ["FILE_ACCESS_DENIED", "a denied path will fail again the same way"],
+    ["SERVER_BAD_CONTENT", "bad content is not transient"],
+    [undefined, "an unknown error should fall through to manual retry"]
+  ];
+
+  for (const [error, why] of cases) {
+    const { port, started, messages, changedListener } = runBackground();
+    startOneFile(port);
+    await tick(40);
+
+    const delta = { id: 1, state: { current: "interrupted" } };
+    if (error !== undefined) delta.error = { current: error };
+    await changedListener()(delta);
+    await tick(40);
+
+    assert(started.length === 1, `${String(error)}: should not be retried — ${why}`);
+    const done = lastDone(messages);
+    assert(done.failed.length === 1, `${String(error)}: should be reported as failed`);
+    assert(done.retried === 0, `${String(error)}: should report no retries`);
+  }
+}
+
+async function testManualRetryResetsAttempts() {
+  const { port, started, changedListener } = runBackground();
+  startOneFile(port);
+  await tick(40);
+
+  // Burn all three automatic attempts.
+  for (const id of [1, 2, 3]) {
+    await changedListener()({ id, state: { current: "interrupted" }, error: { current: "NETWORK_FAILED" } });
+    await tick(40);
+  }
+  assert(started.length === 3, `Expected 3 automatic attempts, got ${started.length}`);
+
+  // A manual retry should get its own full allowance, not the exhausted count.
+  port.onMessage.listener({ action: "retry" });
+  await tick(40);
+  assert(started.length === 4, `Manual retry should start the file again, got ${started.length}`);
+
+  await changedListener()({ id: 4, state: { current: "interrupted" }, error: { current: "NETWORK_FAILED" } });
+  await tick(40);
+  assert(started.length === 5, "A manual retry should restore automatic retries, not spend its last attempt");
+}
+
+function testTransientErrorClassification() {
+  const { context } = runBackground({ storage: {} });
+  const { isTransientError } = context;
+
+  for (const err of ["NETWORK_FAILED", "NETWORK_TIMEOUT", "SERVER_FAILED", "CRASH"]) {
+    assert(isTransientError(err), `${err} should be treated as transient`);
+  }
+  for (const err of ["USER_CANCELED", "USER_SHUTDOWN", "FILE_NO_SPACE", "SERVER_FORBIDDEN", "", null, undefined, 7]) {
+    assert(!isTransientError(err), `${String(err)} must not be treated as transient`);
+  }
+}
+
 async function main() {
   testBackgroundPathSanitization();
+  testBackgroundPathTraversalIsStripped();
+  testFilenameLengthCaps();
   testContentHelpers();
+  testCategoryListsStayInSync();
+  testExtensionFiltering();
+  testScanOptionResolution();
+  testConcurrencyOption();
   await testBackgroundConcurrency();
   await testBackgroundAppendsDownloadsWhileBusy();
+  await testBackgroundResumesAfterWorkerRestart();
+  await testRestoredDownloadsAreReconciled();
+  await testRestoredDownloadsStillRunningAreLeftAlone();
+  await testRestoredDownloadsTheBrowserForgotAreFailed();
+  await testReconcileToleratesNoSearchApi();
+  await testDownloadsNeverOverwrite();
+  testTransientErrorClassification();
+  await testTransientFailuresAreRetried();
+  await testNonTransientFailuresAreNotRetried();
+  await testManualRetryResetsAttempts();
+  await testDoneMessageCarriesBatchTotal();
   console.log("Smoke tests passed.");
 }
 

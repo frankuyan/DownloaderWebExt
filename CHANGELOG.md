@@ -7,6 +7,32 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- A batch could get permanently stuck. Downloads that finished while the service
+  worker was asleep never fire another event, so a restored worker counted them
+  as active forever: the batch never settled, and because pending work blocks a
+  new batch, every later download was appended to one that could no longer
+  complete. Restored downloads are now checked against the browser's own
+  records; ones still running are left alone, and ones that cannot be verified
+  are marked failed (and so retryable) rather than claimed as complete.
+- Indexes that link each entry twice — an icon and a name, as Apache
+  `FancyIndexing` and nginx `fancyindex` produce — listed every file twice in
+  the tree.
+- Directories that could not be read (an error, a timeout, or a listing that
+  only exists after JavaScript runs) were rendered as empty folders showing
+  "0 files". They are now marked *unavailable* with the reason on hover, and
+  cannot be selected.
+- Continuing a scan discarded whatever the user had already selected, even
+  though a resume only adds to the same tree and the selections were still
+  valid.
+- `Ctrl+A` and `/` stopped working once a file checkbox had focus, because the
+  shortcut guard treated every `<input>` as text entry.
+- The scan status could render "undefined directories" when a content script
+  left over from before an extension update replied with the older message
+  shape.
+- Scanning from a URL that names the index page itself (`/files/index.html`
+  rather than `/files/`) found nothing at all: the base path was computed as
+  `/files/index.html/`, so every link on the page was rejected as being outside
+  the directory. Links now resolve against the containing directory.
 - Download queue now reserves slots while new downloads are starting, so the
   configured concurrency limit is enforced.
 - Tree-view downloads preserve relative directory paths while sanitizing path
@@ -20,8 +46,91 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Popup badge state is cleared when a scan finds no files.
 - Download requests received while a batch is active are appended to the
   current queue instead of resetting batch accounting.
+- Filtering or sorting the list no longer drops selections. Selected files are
+  tracked independently of the rendered DOM, so files hidden by the search box
+  are still downloaded.
+- Downloads that were queued or mid-start when the service worker restarted are
+  now persisted and resumed instead of being silently lost, which previously
+  left the batch stuck below its reported total.
+- Filenames derived from link text, `title`, or `aria-label` are capped at 180
+  characters (extension preserved) so long labels no longer produce downloads
+  the filesystem rejects.
+- Filenames and path segments now have trailing dots and spaces stripped, which
+  Windows rejects.
+- Directory scans stop cleanly when the popup is closed mid-crawl instead of
+  throwing on a disconnected port.
+- The progress bar reflects files actually downloaded, so a batch that entirely
+  failed no longer renders as 100% complete.
+- The popup reconnects to the background worker if its port was dropped, and
+  reports a failure instead of throwing when it cannot be reached.
+
+### Added
+- A scan stopped by a limit can now be continued instead of restarted. The
+  crawl keeps the directories it discovered but did not reach, and **Continue**
+  resumes from there, merging into the existing tree without re-fetching
+  anything. Each continue allows another **Max dirs** worth of directories, so
+  a large server can be walked in chunks without raising the limit. The partial
+  crawl survives closing and reopening the popup.
+- Directories found but not reached are shown in the tree as *not scanned*
+  rather than being hidden or rendered as empty folders.
+- Client-side rendered listings on the current page are now read from the live
+  DOM instead of being re-fetched, so a file browser that builds its index in
+  JavaScript is scannable. Subdirectories are still fetched as raw HTML; one
+  that arrives with no links is reported as possibly needing JavaScript rather
+  than shown as empty.
+- Downloads interrupted by a transient error (dropped connection, timeout,
+  server hiccup) are now re-queued automatically for up to three attempts, and
+  the retry count is surfaced in the progress line. Re-queued files go to the
+  back of the queue so the rest of the batch proceeds first. Cancelled downloads
+  and permanent failures (no disk space, access denied, bad content) are never
+  retried automatically, and an unrecognised error falls through to the manual
+  Retry button rather than being guessed at. A manual retry restores the full
+  automatic allowance for those files.
+- Directory scans now fetch up to 5 directories in parallel instead of strictly
+  one at a time (roughly 3x faster on a latency-bound tree). The pool is bounded
+  so the crawler does not hammer a stranger's file server, and tree order stays
+  deterministic regardless of which fetch finishes first.
+- A **Stop** button ends a running scan and keeps the partial tree, and the other
+  scan controls lock while a crawl is in flight so a second scan cannot race the
+  first.
+- Directories that time out or return an error are now counted and listed in the
+  scan status (hover for the URLs and reasons) instead of being silently skipped.
+- The tree view's expand/collapse control is a real button: keyboard reachable,
+  operable with Enter/Space, and exposing `aria-expanded`. Directory checkboxes
+  carry an accessible name, and checkboxes have a visible focus ring.
+- The **Scan Subdirectories** button is now offered on every page rather than
+  only where the directory-listing heuristic fires, which missed many listing
+  styles (S3 browsers, Caddy, h5ai, themed indexes). Detection now only controls
+  whether the bar is highlighted.
+- Crawl **Depth** (1-10 or unlimited) and **Max dirs** (50-5000) are selectable
+  in the scan bar and remembered between sessions. Depth was previously fixed at
+  5 with no way to change it, and the directory cap was fixed at 200.
+- An **All file types** option collects extensions outside the supported list,
+  for file servers hosting formats the extension does not know about. Pages and
+  page assets stay excluded so ordinary browsing is unaffected.
 
 ### Changed
+- Removed `mapWithConcurrency`, which the breadth-first rewrite left unused
+  along with four tests that were exercising code nothing called. The crawl
+  claims its own slots so the directory cap stays exact, and that batching is
+  covered by the browser tests.
+- Directory scanning is now breadth-first rather than depth-first, so a scan cut
+  short by a limit returns a shallow view of the whole tree instead of one
+  arbitrarily deep branch.
+- Directory-listing detection no longer requires Apache-style `<pre>`/`<table>`
+  markup. It now scores parent links, subdirectory links, links resolving inside
+  the current directory, and link text repeating its own href, which recognises
+  Python `http.server`, Caddy, h5ai and other list- and div-based indexes that
+  were previously missed.
+- Downloads now pass `conflictAction: "uniquify"` explicitly instead of relying
+  on the browser default, so two files whose names collapse to the same sanitized
+  name cannot overwrite each other.
+- The supported extension list grew from 16 to roughly 70, adding archives and
+  disk images, more audio/video formats, data files, installers, e-books and
+  fonts.
+- Files are now grouped by family (Documents, Spreadsheets, Images, Archives,
+  Data, Installers, Fonts, ...) instead of by individual extension, which would
+  otherwise have produced dozens of one-type groups.
 - Chrome and Firefox packages now use separate manifests so each browser gets
   the correct MV3 background declaration.
 - Chrome package manifest no longer includes Firefox-specific Gecko metadata.

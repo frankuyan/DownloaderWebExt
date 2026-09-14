@@ -1,34 +1,41 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
 
 // --- Constants ---
+// Keep in sync with EXTENSION_GROUPS in content.js — scripts/smoke-tests.js
+// asserts they match.
 const CATEGORIES = {
-  PDF: ["pdf"],
-  DOC: ["doc", "docx"],
-  XLS: ["xls", "xlsx"],
-  PPT: ["ppt", "pptx"],
-  TXT: ["txt"],
-  PNG: ["png"],
-  JPG: ["jpg", "jpeg"],
-  GIF: ["gif"],
-  SVG: ["svg"],
-  MP3: ["mp3"],
-  MP4: ["mp4"],
-  ZIP: ["zip"],
-  RAR: ["rar"]
-};
-
-const TYPE_ICONS = {
-  pdf: "\u{1F4C4}", doc: "\u{1F4DD}", docx: "\u{1F4DD}", txt: "\u{1F4DD}",
-  xls: "\u{1F4CA}", xlsx: "\u{1F4CA}", ppt: "\u{1F4CA}", pptx: "\u{1F4CA}",
-  png: "\u{1F5BC}", jpg: "\u{1F5BC}", jpeg: "\u{1F5BC}", gif: "\u{1F5BC}", svg: "\u{1F5BC}",
-  mp3: "\u{1F3B5}", mp4: "\u{1F3AC}", zip: "\u{1F4E6}", rar: "\u{1F4E6}"
+  Documents: ["pdf", "doc", "docx", "odt", "rtf", "txt", "md", "epub", "mobi", "djvu"],
+  Spreadsheets: ["xls", "xlsx", "xlsm", "ods", "csv", "tsv"],
+  Presentations: ["ppt", "pptx", "odp"],
+  Images: ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "tiff", "tif", "ico", "heic", "avif"],
+  Audio: ["mp3", "wav", "flac", "aac", "ogg", "oga", "m4a", "wma", "opus", "aiff"],
+  Video: ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg"],
+  Archives: ["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "iso", "dmg"],
+  Data: ["json", "xml", "yaml", "yml", "sql", "db", "sqlite", "parquet", "log"],
+  Installers: ["exe", "msi", "deb", "rpm", "pkg", "apk", "appimage"],
+  Fonts: ["ttf", "otf", "woff", "woff2"]
 };
 
 const CATEGORY_ORDER = [
-  "PDF", "DOC", "XLS", "PPT", "TXT",
-  "PNG", "JPG", "GIF", "SVG",
-  "MP3", "MP4", "ZIP", "RAR", "Other"
+  "Documents", "Spreadsheets", "Presentations", "Images", "Audio", "Video",
+  "Archives", "Data", "Installers", "Fonts", "Other"
 ];
+
+const CATEGORY_ICONS = {
+  Documents: "\u{1F4C4}",
+  Spreadsheets: "\u{1F4CA}",
+  Presentations: "\u{1F4CA}",
+  Images: "\u{1F5BC}",
+  Audio: "\u{1F3B5}",
+  Video: "\u{1F3AC}",
+  Archives: "\u{1F4E6}",
+  Data: "\u{1F5C4}",
+  Installers: "\u2699",
+  Fonts: "\u{1F524}",
+  Other: "\u{1F4CE}"
+};
+
+const DEFAULT_SCAN_SETTINGS = { includeAllTypes: false, maxDepth: 5, maxDirs: 200 };
 
 // --- State ---
 let allFiles = [];
@@ -37,6 +44,13 @@ let isTreeMode = false;
 let downloadPort = null;
 let typePreferences = {};
 let activeTabId = null;
+let scanSettings = { ...DEFAULT_SCAN_SETTINGS };
+// Non-null while a directory crawl is running, so a second scan cannot be
+// started underneath the first and race it to set treeData.
+let activeScanPort = null;
+// Selected files keyed by URL. Kept outside the DOM so filtering or sorting —
+// which rebuilds the list — never silently drops a selection.
+const selection = new Map();
 
 // --- DOM refs ---
 const fileListEl = document.getElementById("fileList");
@@ -55,6 +69,11 @@ const progressContainer = document.getElementById("downloadProgress");
 const progressBar = document.getElementById("progressBar");
 const progressText = document.getElementById("progressText");
 const retryBtn = document.getElementById("retryBtn");
+const includeAllTypesEl = document.getElementById("includeAllTypes");
+const scanDepthEl = document.getElementById("scanDepth");
+const scanMaxDirsEl = document.getElementById("scanMaxDirs");
+const stopScanBtn = document.getElementById("stopScanBtn");
+const continueScanBtn = document.getElementById("continueScanBtn");
 
 // --- Utility ---
 function getCategoryForType(type) {
@@ -64,16 +83,28 @@ function getCategoryForType(type) {
   return "Other";
 }
 
+function getIconForType(type) {
+  return CATEGORY_ICONS[getCategoryForType(type)] || CATEGORY_ICONS.Other;
+}
+
+function syncSelection(cb) {
+  if (cb.checked) selection.set(cb.dataset.url, cb.dataset.filename);
+  else selection.delete(cb.dataset.url);
+}
+
+function setCheckboxes(root, checked) {
+  root.querySelectorAll(".file-checkbox").forEach((cb) => {
+    cb.checked = checked;
+    syncSelection(cb);
+  });
+}
+
 function getSelectedFiles() {
-  const checked = fileListEl.querySelectorAll(".file-checkbox:checked");
-  return Array.from(checked).map((cb) => ({
-    url: cb.dataset.url,
-    filename: cb.dataset.filename
-  }));
+  return Array.from(selection, ([url, filename]) => ({ url, filename }));
 }
 
 function updateDownloadBtn() {
-  const count = getSelectedFiles().length;
+  const count = selection.size;
   downloadBtn.disabled = count === 0;
   downloadBtn.textContent = count > 0 ? `Download Selected (${count})` : "Download Selected";
 }
@@ -81,7 +112,7 @@ function updateDownloadBtn() {
 function updateGroupCheckbox(groupEl) {
   const checkboxes = groupEl.querySelectorAll(".file-checkbox");
   const groupCb = groupEl.querySelector(".group-checkbox");
-  if (!groupCb) return;
+  if (!groupCb || checkboxes.length === 0) return;
   const allChecked = Array.from(checkboxes).every((cb) => cb.checked);
   const someChecked = Array.from(checkboxes).some((cb) => cb.checked);
   groupCb.checked = allChecked;
@@ -106,16 +137,47 @@ function decodePath(path) {
 // --- Type Preferences (storage API) ---
 async function loadPreferences() {
   try {
-    const data = await api.storage.local.get("typePreferences");
+    const data = await api.storage.local.get(["typePreferences", "scanSettings"]);
     typePreferences = data.typePreferences || {};
+    scanSettings = { ...DEFAULT_SCAN_SETTINGS, ...(data.scanSettings || {}) };
   } catch {
     typePreferences = {};
+    scanSettings = { ...DEFAULT_SCAN_SETTINGS };
   }
+}
+
+function saveScanSettings() {
+  api.storage.local.set({ scanSettings }).catch(() => {});
+}
+
+// Assigning a value with no matching <option> leaves the select blank, so a
+// stored setting from an older build falls back to the default instead.
+function setSelectValue(el, value, fallback) {
+  el.value = String(value);
+  if (!el.value) el.value = String(fallback);
+}
+
+function applyScanSettingsToControls() {
+  includeAllTypesEl.checked = scanSettings.includeAllTypes;
+  setSelectValue(scanDepthEl, scanSettings.maxDepth, DEFAULT_SCAN_SETTINGS.maxDepth);
+  setSelectValue(scanMaxDirsEl, scanSettings.maxDirs, DEFAULT_SCAN_SETTINGS.maxDirs);
+  scanSettings.maxDepth = scanDepthEl.value === "all" ? "all" : Number(scanDepthEl.value);
+  scanSettings.maxDirs = Number(scanMaxDirsEl.value);
 }
 
 function savePreference(category, checked) {
   typePreferences[category] = checked;
   api.storage.local.set({ typePreferences }).catch(() => {});
+}
+
+// Seeds the initial selection from saved per-type preferences. Applied once per
+// scan so later re-renders cannot undo the user's manual changes.
+function applyTypePreferences() {
+  for (const file of allFiles) {
+    if (typePreferences[getCategoryForType(file.type)]) {
+      selection.set(file.url, file.filename);
+    }
+  }
 }
 
 // --- Badge on extension icon ---
@@ -129,7 +191,7 @@ function setBadge(count) {
 
 // --- Render: Flat file list ---
 function renderFiles(filter = "") {
-  fileListEl.querySelectorAll(".group-section").forEach((el) => el.remove());
+  fileListEl.querySelectorAll(".group-section, .tree-node").forEach((el) => el.remove());
 
   const lowerFilter = filter.toLowerCase();
   const grouped = {};
@@ -160,7 +222,6 @@ function renderFiles(filter = "") {
     const groupCb = document.createElement("input");
     groupCb.type = "checkbox";
     groupCb.className = "group-checkbox";
-    if (typePreferences[cat]) groupCb.checked = true;
     header.appendChild(groupCb);
     header.appendChild(document.createTextNode(`${cat} (${files.length})`));
     section.appendChild(header);
@@ -175,15 +236,16 @@ function renderFiles(filter = "") {
       cb.className = "file-checkbox";
       cb.dataset.url = file.url;
       cb.dataset.filename = file.filename;
-      if (typePreferences[cat]) cb.checked = true;
+      cb.checked = selection.has(file.url);
       cb.addEventListener("change", () => {
+        syncSelection(cb);
         updateGroupCheckbox(section);
         updateDownloadBtn();
       });
 
       const icon = document.createElement("span");
       icon.className = "file-icon";
-      icon.textContent = TYPE_ICONS[file.type] || "\u{1F4CE}";
+      icon.textContent = getIconForType(file.type);
 
       const name = document.createElement("span");
       name.className = "file-name";
@@ -208,13 +270,13 @@ function renderFiles(filter = "") {
     }
 
     groupCb.addEventListener("change", () => {
-      const checkboxes = section.querySelectorAll(".file-checkbox");
-      checkboxes.forEach((cb) => (cb.checked = groupCb.checked));
+      setCheckboxes(section, groupCb.checked);
       savePreference(cat, groupCb.checked);
       updateDownloadBtn();
     });
 
     fileListEl.appendChild(section);
+    updateGroupCheckbox(section);
   }
 
   emptyEl.classList.toggle("hidden", anyVisible);
@@ -276,14 +338,16 @@ function renderTreeNode(node, depth, filter) {
     cb.className = "file-checkbox";
     cb.dataset.url = node.url;
     cb.dataset.filename = getTreeDownloadPath(node);
+    cb.checked = selection.has(node.url);
     cb.addEventListener("change", () => {
+      syncSelection(cb);
       updateAncestorCheckboxes(cb);
       updateDownloadBtn();
     });
 
     const icon = document.createElement("span");
     icon.className = "file-icon";
-    icon.textContent = TYPE_ICONS[node.ext] || "\u{1F4CE}";
+    icon.textContent = getIconForType(node.ext);
 
     const name = document.createElement("span");
     name.className = "file-name";
@@ -306,13 +370,17 @@ function renderTreeNode(node, depth, filter) {
   dirRow.className = "dir-node";
   dirRow.style.paddingLeft = `${depth * 16 + 6}px`;
 
-  const toggle = document.createElement("span");
+  // A real button so the tree can be expanded from the keyboard, not just by
+  // clicking the row.
+  const toggle = document.createElement("button");
+  toggle.type = "button";
   toggle.className = "tree-toggle";
   toggle.textContent = "\u25BC";
 
   const dirCb = document.createElement("input");
   dirCb.type = "checkbox";
   dirCb.className = "dir-checkbox";
+  dirCb.setAttribute("aria-label", `Select all files in ${node.name}`);
 
   const dirIcon = document.createElement("span");
   dirIcon.className = "dir-icon";
@@ -325,7 +393,23 @@ function renderTreeNode(node, depth, filter) {
   const fileCount = countFiles(node);
   const countSpan = document.createElement("span");
   countSpan.className = "dir-count";
-  countSpan.textContent = `${fileCount} file${fileCount !== 1 ? "s" : ""}`;
+  // A directory that was never reached, or could not be read, has no children.
+  // Reporting "0 files" for either would claim it is empty.
+  const unreadable = Boolean(node.pending || node.error);
+  if (node.pending) {
+    countSpan.classList.add("pending");
+    countSpan.textContent = "not scanned";
+  } else if (node.error) {
+    countSpan.classList.add("failed");
+    countSpan.textContent = "unavailable";
+    dirRow.title = node.error;
+  } else {
+    countSpan.textContent = `${fileCount} file${fileCount !== 1 ? "s" : ""}`;
+  }
+  if (unreadable) {
+    dirCb.disabled = true;
+    toggle.disabled = true;
+  }
 
   dirRow.append(toggle, dirCb, dirIcon, dirName, countSpan);
   container.appendChild(dirRow);
@@ -349,22 +433,35 @@ function renderTreeNode(node, depth, filter) {
   if (filter && childrenContainer.children.length === 0) return null;
 
   container.appendChild(childrenContainer);
+  updateDirCheckbox(container);
 
   const toggleExpand = () => {
     const isCollapsed = childrenContainer.classList.toggle("collapsed");
     toggle.classList.toggle("collapsed", isCollapsed);
+    toggle.setAttribute("aria-expanded", String(!isCollapsed));
+    toggle.setAttribute("aria-label", `${isCollapsed ? "Expand" : "Collapse"} ${node.name}`);
     dirIcon.textContent = isCollapsed ? "\u{1F4C1}" : "\u{1F4C2}";
   };
 
-  dirRow.addEventListener("click", (e) => {
-    if (e.target === dirCb) return;
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.setAttribute("aria-label", `Collapse ${node.name}`);
+
+  toggle.addEventListener("click", (e) => {
     e.stopPropagation();
     toggleExpand();
   });
 
+  dirRow.addEventListener("click", (e) => {
+    // The checkbox and the toggle handle their own clicks.
+    if (e.target === dirCb || e.target === toggle) return;
+    e.stopPropagation();
+    // Nothing to expand, and the toggle is disabled to say so.
+    if (unreadable) return;
+    toggleExpand();
+  });
+
   dirCb.addEventListener("change", () => {
-    const fileCheckboxes = childrenContainer.querySelectorAll(".file-checkbox");
-    fileCheckboxes.forEach((cb) => (cb.checked = dirCb.checked));
+    setCheckboxes(childrenContainer, dirCb.checked);
     const childDirCbs = childrenContainer.querySelectorAll(".dir-checkbox");
     childDirCbs.forEach((cb) => {
       cb.checked = dirCb.checked;
@@ -410,33 +507,55 @@ function connectDownloadPort() {
     else if (msg.type === "done") showDownloadDone(msg);
   });
   downloadPort.onDisconnect.addListener(() => { downloadPort = null; });
-  downloadPort.postMessage({ action: "status" });
 }
 
-function showProgress({ completed, failed, active, queued, total }) {
-  if (total === 0) return;
+// The background service worker can be torn down while the popup is open, which
+// disconnects the port. Reconnect lazily instead of throwing on postMessage.
+function postToBackground(msg) {
+  try {
+    if (!downloadPort) connectDownloadPort();
+    downloadPort.postMessage(msg);
+    return true;
+  } catch {
+    downloadPort = null;
+    return false;
+  }
+}
+
+function showProgress({ completed, failed, active, queued, retried, total }) {
+  if (!total) {
+    progressContainer.classList.add("hidden");
+    return;
+  }
   progressContainer.classList.remove("hidden");
-  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const pct = Math.round((completed / total) * 100);
   progressBar.style.width = `${pct}%`;
 
   let text = `${completed}/${total} completed`;
   if (active > 0) text += ` \u00B7 ${active} active`;
   if (queued > 0) text += ` \u00B7 ${queued} queued`;
+  if (retried > 0) text += ` \u00B7 ${retried} retried`;
   progressText.textContent = text;
 
   retryBtn.classList.toggle("hidden", failed === 0);
   if (failed > 0) retryBtn.textContent = `Retry Failed (${failed})`;
 }
 
-function showDownloadDone({ completed, failed }) {
-  progressBar.style.width = "100%";
+function showDownloadDone({ completed, total, retried, failed }) {
+  // The bar reflects what actually downloaded, so a fully failed batch does not
+  // render as 100% complete.
+  const denominator = total || completed + failed.length;
+  const pct = denominator > 0 ? Math.round((completed / denominator) * 100) : 0;
+  progressBar.style.width = `${pct}%`;
+
+  const retrySuffix = retried > 0 ? ` (${retried} auto-retried)` : "";
 
   if (failed.length > 0) {
-    progressText.textContent = `Done: ${completed} downloaded, ${failed.length} failed`;
+    progressText.textContent = `Done: ${completed} downloaded, ${failed.length} failed${retrySuffix}`;
     retryBtn.classList.remove("hidden");
     retryBtn.textContent = `Retry Failed (${failed.length})`;
   } else {
-    progressText.textContent = `Done: ${completed} downloaded`;
+    progressText.textContent = `Done: ${completed} downloaded${retrySuffix}`;
     retryBtn.classList.add("hidden");
     setTimeout(() => progressContainer.classList.add("hidden"), 3000);
   }
@@ -448,30 +567,50 @@ function showDownloadDone({ completed, failed }) {
 // --- Scan Workflow ---
 
 async function scanActiveTab() {
+  await loadPreferences();
+  applyScanSettingsToControls();
+  await runPageScan();
+}
+
+async function runPageScan() {
+  const scanMessage = { action: "scanPage", includeAllTypes: scanSettings.includeAllTypes };
+  let isDirectory = false;
+
+  loadingEl.classList.remove("hidden");
+  isTreeMode = false;
+  treeData = null;
+
   try {
     const [tab] = await api.tabs.query({ active: true, currentWindow: true });
     activeTabId = tab.id;
 
     let response;
     try {
-      response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
+      response = await api.tabs.sendMessage(tab.id, scanMessage);
     } catch {
       await api.scripting.executeScript({
         target: { tabId: tab.id },
         files: ["/content.js"]
       });
-      response = await api.tabs.sendMessage(tab.id, { action: "scanPage" });
+      response = await api.tabs.sendMessage(tab.id, scanMessage);
     }
     allFiles = response?.files || response || [];
-    const isDirectory = response?.isDirectory || false;
-
-    if (isDirectory) scanDirBar.classList.remove("hidden");
+    isDirectory = response?.isDirectory || false;
   } catch (err) {
     console.error("Scan failed:", err);
     allFiles = [];
   }
 
   loadingEl.classList.add("hidden");
+
+  // The crawler works on any page that links to same-origin subdirectories, so
+  // the button is always offered. Detection only decides whether it is
+  // highlighted, since the heuristic misses many non-Apache listing styles.
+  scanDirBar.classList.remove("hidden");
+  scanDirBar.classList.toggle("suggested", isDirectory);
+  scanDirBtn.textContent = "Scan Subdirectories";
+  scanDirBtn.disabled = false;
+  continueScanBtn.classList.add("hidden");
 
   if (allFiles.length > 0) {
     badgeEl.textContent = allFiles.length;
@@ -483,27 +622,73 @@ async function scanActiveTab() {
     setBadge(0);
   }
 
-  await loadPreferences();
-  renderFiles();
+  selection.clear();
+  applyTypePreferences();
+  renderFiles(searchEl.value);
 }
 
-function startDirectoryScan() {
-  if (!activeTabId) return;
+function setScanRunning(running) {
+  scanDirBtn.disabled = running;
+  includeAllTypesEl.disabled = running;
+  scanDepthEl.disabled = running;
+  scanMaxDirsEl.disabled = running;
+  stopScanBtn.classList.toggle("hidden", !running);
+  stopScanBtn.disabled = false;
+  stopScanBtn.textContent = "Stop";
+  if (running) continueScanBtn.classList.add("hidden");
+}
 
-  scanDirBtn.disabled = true;
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Describes how a finished crawl ended: how much it covered, what it left
+// behind, and whether directories were unreachable.
+function describeScanResult(msg, fileCount) {
+  const parts = [];
+  // A content script from before an extension update can still be live in an
+  // open tab and send the older message shape, so nothing here assumes a field.
+  const scanned = Number.isFinite(msg.scanned) ? msg.scanned : 0;
+  const remaining = Number.isFinite(msg.remaining) ? msg.remaining : 0;
+  const skipped = Number.isFinite(msg.skippedByDepth) ? msg.skippedByDepth : 0;
+  const failedCount = Number.isFinite(msg.failedCount) ? msg.failedCount : 0;
+  const scope = `${plural(scanned, "directory", "directories")}`;
+  parts.push(fileCount > 0
+    ? `Found ${plural(fileCount, "file", "files")} in ${scope}`
+    : `No files found in ${scope}`);
+
+  if (msg.cancelled) parts.push("stopped early");
+  if (remaining > 0) parts.push(`${remaining} not scanned yet`);
+  if (skipped > 0) parts.push(`${skipped} beyond the depth limit`);
+  if (failedCount > 0) parts.push(`${failedCount} skipped`);
+
+  return parts.join(" \u00B7 ");
+}
+
+function startDirectoryScan({ resume = false } = {}) {
+  if (!activeTabId || activeScanPort) return;
+
+  let port;
+  try {
+    port = api.tabs.connect(activeTabId, { name: "directoryScan" });
+  } catch {
+    scanStatus.classList.remove("hidden");
+    scanStatus.textContent = "Could not start scan. Reload the page and try again.";
+    return;
+  }
+
+  activeScanPort = port;
+  setScanRunning(true);
   scanDirBtn.textContent = "Scanning...";
   scanStatus.classList.remove("hidden");
-  scanStatus.textContent = "Starting scan...";
+  scanStatus.textContent = resume ? "Continuing scan..." : "Starting scan...";
 
   let dirCount = 0;
   let scanFinished = false;
 
-  const port = api.tabs.connect(activeTabId, { name: "directoryScan" });
-
   port.onDisconnect.addListener(() => {
+    activeScanPort = null;
     if (!scanFinished) {
+      setScanRunning(false);
       scanDirBtn.textContent = "Scan Subdirectories";
-      scanDirBtn.disabled = false;
       scanStatus.textContent = "Scan interrupted. Try again.";
     }
   });
@@ -511,34 +696,66 @@ function startDirectoryScan() {
   port.onMessage.addListener((msg) => {
     if (msg.type === "progress") {
       dirCount++;
-      scanStatus.textContent = `Scanning... (${dirCount} directories explored)`;
+      scanStatus.textContent = `Scanning... (${dirCount} director${dirCount === 1 ? "y" : "ies"} explored)`;
     } else if (msg.type === "done") {
       scanFinished = true;
       treeData = msg.tree;
       isTreeMode = true;
-      const truncatedText = msg.truncated ? " (limit reached)" : "";
+      // A resume adds to the same tree, so anything already ticked is still a
+      // real file; only a fresh scan invalidates the selection.
+      if (!msg.resumed) selection.clear();
 
-      if (treeData) {
-        const total = countFiles(treeData);
-        badgeEl.textContent = total;
+      const fileCount = treeData ? countFiles(treeData) : 0;
+      if (fileCount > 0) {
+        badgeEl.textContent = fileCount;
         badgeEl.classList.remove("hidden");
-        setBadge(total);
-        scanDirBtn.textContent = "Rescan";
-        scanDirBtn.disabled = false;
-        scanStatus.textContent = `Found ${total} files in ${dirCount + 1} directories${truncatedText}`;
+        setBadge(fileCount);
       } else {
-        scanDirBtn.textContent = "Scan Subdirectories";
-        scanDirBtn.disabled = false;
-        scanStatus.textContent = `No files found in subdirectories.${truncatedText}`;
+        badgeEl.classList.add("hidden");
+        setBadge(0);
+      }
+
+      setScanRunning(false);
+      scanDirBtn.textContent = treeData ? "Rescan" : "Scan Subdirectories";
+      // Directories were discovered but not reached, so the crawl can pick up
+      // where it left off instead of starting over.
+      continueScanBtn.classList.toggle("hidden", !(Number(msg.remaining) > 0));
+      scanStatus.textContent = describeScanResult(msg, fileCount);
+      if (msg.failedCount > 0 && Array.isArray(msg.failed)) {
+        scanStatus.title = msg.failed.map((f) => `${f.url} (${f.reason})`).join("\n");
+      } else {
+        scanStatus.removeAttribute("title");
       }
 
       render(searchEl.value);
+      activeScanPort = null;
       port.disconnect();
     }
   });
 
-  port.postMessage({ action: "scanDirectory" });
+  port.postMessage({
+    action: resume ? "continueScan" : "scanDirectory",
+    maxDepth: scanSettings.maxDepth,
+    maxDirs: scanSettings.maxDirs,
+    includeAllTypes: scanSettings.includeAllTypes
+  });
 }
+
+continueScanBtn.addEventListener("click", () => startDirectoryScan({ resume: true }));
+
+stopScanBtn.addEventListener("click", () => {
+  if (!activeScanPort) return;
+  stopScanBtn.disabled = true;
+  stopScanBtn.textContent = "Stopping...";
+  scanStatus.textContent = "Stopping scan...";
+  try {
+    activeScanPort.postMessage({ action: "cancelScan" });
+  } catch {
+    activeScanPort = null;
+    setScanRunning(false);
+    scanDirBtn.textContent = "Scan Subdirectories";
+  }
+});
 
 // --- Event Listeners ---
 
@@ -553,12 +770,32 @@ sortSelect.addEventListener("change", () => render(searchEl.value));
 // Directory scan
 scanDirBtn.addEventListener("click", startDirectoryScan);
 
+scanDepthEl.addEventListener("change", () => {
+  scanSettings.maxDepth = scanDepthEl.value === "all" ? "all" : Number(scanDepthEl.value);
+  saveScanSettings();
+});
+
+scanMaxDirsEl.addEventListener("change", () => {
+  scanSettings.maxDirs = Number(scanMaxDirsEl.value);
+  saveScanSettings();
+});
+
+// Changing the type filter invalidates whatever is on screen, so re-scan with
+// the new setting — the directory tree if there is one, otherwise the page.
+includeAllTypesEl.addEventListener("change", () => {
+  scanSettings.includeAllTypes = includeAllTypesEl.checked;
+  saveScanSettings();
+
+  if (isTreeMode && treeData) {
+    startDirectoryScan();
+  } else {
+    runPageScan();
+  }
+});
+
 // Select all / deselect all
 document.getElementById("selectAll").addEventListener("click", () => {
-  fileListEl.querySelectorAll(".file-checkbox").forEach((cb) => {
-    const item = cb.closest(".file-item, .tree-file");
-    if (item && !item.classList.contains("hidden")) cb.checked = true;
-  });
+  setCheckboxes(fileListEl, true);
   fileListEl.querySelectorAll(".group-checkbox, .dir-checkbox").forEach((cb) => {
     cb.checked = true;
     cb.indeterminate = false;
@@ -567,6 +804,8 @@ document.getElementById("selectAll").addEventListener("click", () => {
 });
 
 document.getElementById("deselectAll").addEventListener("click", () => {
+  // Clears everything, including selections currently hidden by the filter.
+  selection.clear();
   fileListEl.querySelectorAll(".file-checkbox").forEach((cb) => (cb.checked = false));
   fileListEl.querySelectorAll(".group-checkbox, .dir-checkbox").forEach((cb) => {
     cb.checked = false;
@@ -586,8 +825,11 @@ downloadBtn.addEventListener("click", () => {
     subfolder: subfolder || undefined
   }));
 
-  if (!downloadPort) connectDownloadPort();
-  downloadPort.postMessage({ action: "download", files: payload });
+  if (!postToBackground({ action: "download", files: payload })) {
+    progressContainer.classList.remove("hidden");
+    progressText.textContent = "Could not reach the downloader. Try again.";
+    return;
+  }
 
   downloadBtn.disabled = true;
   downloadBtn.textContent = "Downloading...";
@@ -599,8 +841,10 @@ downloadBtn.addEventListener("click", () => {
 
 // Retry failed
 retryBtn.addEventListener("click", () => {
-  if (!downloadPort) connectDownloadPort();
-  downloadPort.postMessage({ action: "retry" });
+  if (!postToBackground({ action: "retry" })) {
+    progressText.textContent = "Could not reach the downloader. Try again.";
+    return;
+  }
   retryBtn.classList.add("hidden");
   progressText.textContent = "Retrying failed downloads...";
 });
@@ -623,7 +867,11 @@ copyUrlsBtn.addEventListener("click", () => {
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
   const isMod = e.ctrlKey || e.metaKey;
-  const inInput = document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "SELECT";
+  // Only text entry should swallow these shortcuts. Checkboxes are inputs too,
+  // so testing the tag alone disabled Ctrl+A and "/" after ticking a file.
+  const active = document.activeElement;
+  const inInput = Boolean(active) && (active.tagName === "SELECT"
+    || (active.tagName === "INPUT" && !["checkbox", "radio", "button"].includes(active.type)));
 
   // Ctrl+A — select all (when not in an input)
   if (isMod && e.key === "a" && !inInput) {
@@ -654,5 +902,5 @@ document.addEventListener("keydown", (e) => {
 });
 
 // --- Init ---
-connectDownloadPort();
+postToBackground({ action: "status" });
 scanActiveTab();

@@ -179,13 +179,32 @@ While downloads are running, a progress bar shows:
 - **Active** — Files currently downloading (up to 3)
 - **Queued** — Files waiting to start
 
-If any downloads fail (due to network errors, broken URLs, etc.), a **Retry Failed** button appears:
+**Automatic retries**
+
+Downloads interrupted by a clearly temporary problem — a dropped connection, a
+timeout, a server hiccup — are re-queued automatically and tried up to three
+times in total. Retried files go to the back of the queue, so the rest of the
+batch downloads first rather than the extension hammering a struggling server.
+The progress line counts them ("12/20 completed · 2 retried").
+
+Anything else is left alone: a download you cancelled yourself is never
+restarted, and neither is one that failed for a reason that will not change on
+its own (no disk space, a permission problem, a rejected request). Those go
+straight to the failed list for you to decide about.
+
+If any downloads fail (because retries ran out, or because the failure was not
+retryable), a **Retry Failed** button appears:
 
 ```
 Done: 10 downloaded, 2 failed        [Retry Failed (2)]
 ```
 
-Click the button to re-attempt all failed downloads. You can retry as many times as needed.
+Click the button to re-attempt all failed downloads. You can retry as many times
+as needed, and each click restores the full allowance of automatic retries for
+those files.
+
+Downloads never overwrite an existing file. If a name is already taken — on disk
+or by another file in the same batch — the browser appends a counter instead.
 
 ### Downloading to a Subfolder
 
@@ -234,25 +253,93 @@ A directory listing is a web page that shows the contents of a folder on a web s
 - University and research institution file repositories
 - Software download mirrors
 
-When File Downloader detects that the current page is a directory listing, it enables an additional feature: **subdirectory scanning**.
+When File Downloader detects that the current page is a directory listing, it highlights the **subdirectory scanning** bar.
 
 ### Scanning Subdirectories
 
-When a directory listing is detected, a blue bar appears below the toolbar:
+The scan bar always appears below the toolbar, on every page:
 
 ```
-┌─────────────────────────────────────────────┐
-│  [Scan Subdirectories]    Scan status here   │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  [Scan Subdirectories] [Stop] [Continue]  Depth [5 v]  Max [200 v] │
+│  Scan status here                                                  │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+It is tinted blue when the page is recognised as a directory listing. On other
+pages it stays neutral but remains clickable — the crawler works on any page
+that links to same-origin subdirectories, and the detection heuristic does not
+recognise every listing style (it looks for an "Index of"-style title, or a mix
+of parent links, subdirectory links and link text repeating its href). If a file
+server you use is not detected, click the button anyway.
 
 To scan all subdirectories:
 
-1. Click the **Scan Subdirectories** button.
-2. The extension begins recursively visiting each subdirectory linked from the page.
-3. A real-time status message shows how many directories have been explored.
-4. Scanning continues up to **5 levels deep** to prevent excessive crawling.
+1. Choose a **Depth** (1-10, or **All**) and a **Max dirs** cap (50-5000).
+2. Click the **Scan Subdirectories** button.
+3. The extension begins recursively visiting each subdirectory linked from the page.
+4. A real-time status message shows how many directories have been explored.
 5. When complete, the view switches from the flat file list to an interactive **tree view**.
+
+**Depth and Max dirs**
+
+| Setting | Default | What it does |
+|---|---|---|
+| **Depth** | 5 | How many levels below the current folder to walk. **All** removes the depth limit. |
+| **Max dirs** | 200 | Hard stop after this many directories, whatever the depth. The status line reports "(limit reached)" when it bites. |
+
+Both settings are remembered between sessions. The **Max dirs** cap is what
+ultimately bounds a **Depth: All** scan.
+
+**Order of exploration**
+
+Scanning is breadth-first: every folder at one level is explored before going
+deeper. If a scan runs out of budget you get a shallow view of the whole server
+rather than one arbitrarily deep branch.
+
+Folders that were found but not reached appear in the tree marked *not scanned*.
+They are shown rather than hidden so you can see what is still out there, and
+they cannot be selected — there is nothing in them yet.
+
+A folder the extension could not read is marked *unavailable* instead; hover it
+for the reason. Neither is shown as an empty folder, because neither is one.
+
+**Continuing a scan**
+
+When a scan stops with folders left over, a **Continue** button appears. It
+picks up from exactly where the previous run stopped: already-visited folders
+are not fetched again, the new results are merged into the existing tree, and
+anything you had already ticked stays selected.
+
+Each **Continue** allows another **Max dirs** worth of directories, so you do
+not need to raise the limit to make progress — click it repeatedly to walk a
+large server in chunks. The partial crawl is kept for as long as the tab stays
+open, so closing and reopening the popup does not lose it. Changing **All file
+types** starts a fresh scan instead, since the folders already visited were
+filtered under the old setting.
+
+**Stopping a scan**
+
+While a scan runs, the other controls lock and a **Stop** button appears. Stopping
+keeps whatever has been found so far — the tree is built from the directories
+already visited, and the status line notes that the scan was stopped early. This
+is the quickest way to deal with a **Depth: All** scan that is taking longer than
+you expected.
+
+**Skipped directories**
+
+Directories that time out, refuse the request, or return an error are skipped
+rather than failing the whole scan. The status line reports how many were
+skipped, and hovering it lists each one with the reason.
+
+**Listings built by JavaScript**
+
+Some file browsers send an empty page and fill the listing in with JavaScript.
+The page you are looking at is handled fine — the extension reads what the
+browser has already rendered. Subdirectories are a different matter: those are
+fetched as raw HTML, which for such a server arrives with no links in it. Rather
+than reporting an empty folder, the scan skips it with the reason "no links in
+the HTML (may need JavaScript)" so you can see what happened.
 
 **What happens during scanning:**
 - The extension follows links to subdirectories on the same server.
@@ -290,6 +377,13 @@ After a directory scan completes, files are displayed in a hierarchical tree str
 - Click the **toggle arrow** (▼/▶) or the **directory name** to expand or collapse a folder.
 - Collapsed directories hide all their contents.
 - The arrow rotates to indicate the current state.
+
+### Keyboard Access in Tree View
+
+The expand/collapse caret on each directory row is a real button: tab to it and
+press <kbd>Enter</kbd> or <kbd>Space</kbd> to open or close that folder. It
+reports its state to screen readers, and each directory checkbox is labelled
+with the folder it selects.
 
 ### Selecting Files in Tree View
 
@@ -450,20 +544,29 @@ Some pages block extensions from injecting scripts due to strict Content Securit
 
 There is no workaround for this — it's a security measure by the website.
 
-### Scan Subdirectories button doesn't appear
+### Scan Subdirectories button isn't highlighted
 
-The button only appears when the extension detects that the current page is a directory listing. Detection is based on:
-- The page title containing "Index of"
-- The page structure having `<pre>` or `<table>` elements with a high ratio of relative links
+The button is always present. It is only tinted blue when the extension
+recognises the page as a directory listing, based on:
+- A page title like "Index of /files" or "Directory listing for /files"
+- Otherwise, a combination of signals: most links resolving inside the current
+  directory, a link to the parent folder, several subdirectory links, and link
+  text that repeats its own href
 
-If you're on a directory listing but the button doesn't appear, the page may use a non-standard format that the heuristic doesn't recognize.
+That covers Apache and nginx indexes, Python's `http.server`, Caddy's file
+server, and most list- and table-based listings. Some themed or
+JavaScript-rendered indexes will still not be recognised — that affects the
+highlight only. Click the button and the scan runs exactly the same way.
 
 ### Directory scan is slow or incomplete
 
-- Each subdirectory requires a separate network request, so deep directory structures take time.
-- Scanning stops at **5 levels deep** to prevent excessive crawling.
+- Each subdirectory requires a separate network request. Up to 5 are fetched in parallel, but very large trees still take time.
+- Scanning stops at the configured **Depth** (default 5) and **Max dirs** (default 200). Raise either in the scan bar if results are cut short — the status line says "(limit reached)" when a cap was hit.
 - Only same-origin (same website) subdirectories are followed.
-- If the server rate-limits requests, some directories may be skipped.
+- If the server rate-limits requests, some directories may be skipped. The status line reports how many, and hovering it shows which.
+- If the scan stopped at a limit, click **Continue** rather than **Rescan** — it resumes instead of starting over.
+- Files whose extensions are outside the supported list are ignored; tick **All file types** to include them.
+- Use **Stop** to end a long scan and keep the partial results.
 
 ### Too many images detected
 
