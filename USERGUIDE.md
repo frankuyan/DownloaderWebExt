@@ -301,11 +301,15 @@ Folders that were found but not reached appear in the tree marked *not scanned*.
 They are shown rather than hidden so you can see what is still out there, and
 they cannot be selected — there is nothing in them yet.
 
+A folder the extension could not read is marked *unavailable* instead; hover it
+for the reason. Neither is shown as an empty folder, because neither is one.
+
 **Continuing a scan**
 
 When a scan stops with folders left over, a **Continue** button appears. It
 picks up from exactly where the previous run stopped: already-visited folders
-are not fetched again, and the new results are merged into the existing tree.
+are not fetched again, the new results are merged into the existing tree, and
+anything you had already ticked stays selected.
 
 Each **Continue** allows another **Max dirs** worth of directories, so you do
 not need to raise the limit to make progress — click it repeatedly to walk a

@@ -334,30 +334,6 @@ function createScanReporter(port) {
   return reporter;
 }
 
-// Runs fn over items with a bounded number in flight, preserving input order in
-// the results so the rendered tree does not depend on which fetch won.
-async function mapWithConcurrency(items, limit, fn) {
-  const results = new Array(items.length);
-  if (items.length === 0) return results;
-
-  // A malformed limit falls back to serial rather than to NaN workers, which
-  // would resolve immediately and silently drop every item.
-  const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 1;
-  let next = 0;
-
-  const worker = async () => {
-    while (next < items.length) {
-      const index = next++;
-      results[index] = await fn(items[index]);
-    }
-  };
-
-  await Promise.all(
-    Array.from({ length: Math.min(safeLimit, items.length) }, worker)
-  );
-  return results;
-}
-
 // The crawl is driven from an explicit frontier rather than by recursion, for
 // two reasons: a capped scan then leaves behind the directories it did not
 // reach, so it can be continued instead of restarted; and the traversal is
@@ -382,6 +358,10 @@ function createCrawlState(rootUrl) {
     // Every directory discovered, for de-duplication; a directory can be linked
     // from more than one parent before it is ever fetched.
     seen: new Set([url]),
+    // Files, likewise. Indexes with icons (Apache FancyIndexing, nginx
+    // fancyindex) link each file twice — once from the icon, once from the
+    // name — which would otherwise list every file twice.
+    seenFiles: new Set(),
     // Only directories actually fetched. This is what the cap counts.
     visited: new Set(),
     frontier: [{ url, depth: 0, node: root }],
@@ -398,6 +378,14 @@ async function visitDirectory(entry, state, opts) {
   const { url, depth, node } = entry;
   node.pending = false;
 
+  // Recorded on the node as well as in the summary: a directory we could not
+  // read has no children, and without this it is indistinguishable in the tree
+  // from one that is genuinely empty.
+  const giveUp = (reason) => {
+    state.failed.push({ url, reason });
+    node.error = reason;
+  };
+
   let doc;
   if (url === state.rootUrl) {
     // The page we are on is already rendered, scripts included. Reading the
@@ -409,12 +397,12 @@ async function visitDirectory(entry, state, opts) {
     try {
       const resp = await fetchWithTimeout(url);
       if (!resp.ok) {
-        state.failed.push({ url, reason: `HTTP ${resp.status}` });
+        giveUp(`HTTP ${resp.status}`);
         return;
       }
       html = await resp.text();
     } catch (err) {
-      state.failed.push({ url, reason: err?.name === "AbortError" ? "timed out" : "unreachable" });
+      giveUp(err?.name === "AbortError" ? "timed out" : "unreachable");
       return;
     }
     doc = new DOMParser().parseFromString(html, "text/html");
@@ -428,7 +416,7 @@ async function visitDirectory(entry, state, opts) {
   // JavaScript: the markup arrives empty and the entries are added on load.
   // Fetching cannot see those, so say so rather than reporting an empty folder.
   if (anchors.length === 0 && url !== state.rootUrl) {
-    state.failed.push({ url, reason: "no links in the HTML (may need JavaScript)" });
+    giveUp("no links in the HTML (may need JavaScript)");
     return;
   }
 
@@ -468,6 +456,9 @@ async function visitDirectory(entry, state, opts) {
       node.children.push(childNode);
       state.frontier.push({ url: resolved.href, depth: depth + 1, node: childNode });
     } else if (isDownloadableExtension(ext, opts.includeAllTypes)) {
+      if (state.seenFiles.has(resolved.href)) continue;
+      state.seenFiles.add(resolved.href);
+
       const filename = ensureExtension(sanitizeFilename(getFilename(resolved.href) || "file"), ext);
       node.children.push({
         name: filename,
@@ -502,7 +493,14 @@ async function runCrawl(state, opts, reporter) {
     if (batch.length === 0) break;
 
     await Promise.all(batch.map(async (entry) => {
-      if (reporter?.cancelled) return;
+      if (reporter?.cancelled) {
+        // The slot was claimed but never used. Give it back, or this directory
+        // would count as scanned, stay pending forever, and be unreachable by
+        // a continue because it is no longer on the frontier.
+        state.visited.delete(entry.url);
+        state.frontier.unshift(entry);
+        return;
+      }
       reporter?.post({ type: "progress", url: entry.url, name: entry.node.name, depth: entry.depth });
       await visitDirectory(entry, state, opts);
     }));
@@ -583,7 +581,6 @@ if (!window.__fileDownloaderInjected) {
         // Directories discovered but not reached. Non-zero means the scan can
         // be continued rather than restarted.
         remaining: state.frontier.length,
-        truncated: state.frontier.length > 0 && !reporter.cancelled,
         resumed: canContinue,
         skippedByDepth: state.skippedByDepth,
         failed: state.failed.slice(0, 20),

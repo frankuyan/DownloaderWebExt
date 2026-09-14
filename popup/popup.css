@@ -417,6 +417,11 @@ button.primary:disabled {
   color: var(--text-muted);
 }
 
+.dir-count.failed {
+  font-style: italic;
+  color: var(--retry-text);
+}
+
 .tree-toggle:disabled,
 .dir-checkbox:disabled {
   opacity: 0.35;

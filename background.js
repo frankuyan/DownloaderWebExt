@@ -72,9 +72,45 @@ let loadPromise = restoreState();
 
 async function restoreState() {
   await loadState();
+  await reconcileActive();
   // A worker restart strands whatever was queued or mid-start, and no download
   // event will ever reference those files. Resume them as soon as we wake up.
   if (queue.length > 0) processQueue();
+  else if (isBatchSettled()) sendProgress();
+}
+
+// Downloads that finished while the worker was gone will never fire another
+// onChanged, so a restored `active` entry can be a download that is already
+// over. Left alone, the batch reports those as active forever: it never
+// settles, and because pending work blocks a fresh batch, every later download
+// is appended to one that can no longer complete. Ask the browser instead.
+async function reconcileActive() {
+  if (active.size === 0 || typeof api.downloads?.search !== "function") return;
+
+  for (const [id, file] of [...active]) {
+    let items;
+    try {
+      items = await api.downloads.search({ id });
+    } catch {
+      continue;
+    }
+
+    const item = Array.isArray(items) ? items[0] : null;
+    if (!item) {
+      // The browser has no record of it, so nothing more is coming. Counting it
+      // as failed leaves it retryable; counting it as complete would claim a
+      // success we cannot support.
+      active.delete(id);
+      failed.push(file);
+    } else if (item.state === "complete") {
+      active.delete(id);
+      completed.push(file);
+    } else if (item.state === "interrupted") {
+      active.delete(id);
+      failed.push(file);
+    }
+  }
+  saveState();
 }
 
 async function loadState() {

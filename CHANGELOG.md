@@ -7,6 +7,28 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- A batch could get permanently stuck. Downloads that finished while the service
+  worker was asleep never fire another event, so a restored worker counted them
+  as active forever: the batch never settled, and because pending work blocks a
+  new batch, every later download was appended to one that could no longer
+  complete. Restored downloads are now checked against the browser's own
+  records; ones still running are left alone, and ones that cannot be verified
+  are marked failed (and so retryable) rather than claimed as complete.
+- Indexes that link each entry twice — an icon and a name, as Apache
+  `FancyIndexing` and nginx `fancyindex` produce — listed every file twice in
+  the tree.
+- Directories that could not be read (an error, a timeout, or a listing that
+  only exists after JavaScript runs) were rendered as empty folders showing
+  "0 files". They are now marked *unavailable* with the reason on hover, and
+  cannot be selected.
+- Continuing a scan discarded whatever the user had already selected, even
+  though a resume only adds to the same tree and the selections were still
+  valid.
+- `Ctrl+A` and `/` stopped working once a file checkbox had focus, because the
+  shortcut guard treated every `<input>` as text entry.
+- The scan status could render "undefined directories" when a content script
+  left over from before an extension update replied with the older message
+  shape.
 - Scanning from a URL that names the index page itself (`/files/index.html`
   rather than `/files/`) found nothing at all: the base path was computed as
   `/files/index.html/`, so every link on the page was rejected as being outside
@@ -88,6 +110,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   page assets stay excluded so ordinary browsing is unaffected.
 
 ### Changed
+- Removed `mapWithConcurrency`, which the breadth-first rewrite left unused
+  along with four tests that were exercising code nothing called. The crawl
+  claims its own slots so the directory cap stays exact, and that batching is
+  covered by the browser tests.
 - Directory scanning is now breadth-first rather than depth-first, so a scan cut
   short by a limit returns a shallow view of the whole tree instead of one
   arbitrarily deep branch.

@@ -167,13 +167,22 @@ module.exports = async function crawlTests(playwright) {
       order(serial) === order(pooled), `${order(serial)} vs ${order(pooled)}`);
 
     check("unreachable directory is reported", pooled.done.failedCount === 1, JSON.stringify(pooled.done.failed));
+    const brokenNode = pooled.done.tree.children.find((c) => c.name === "broken");
+    check("a failed directory is marked on the node, not just counted",
+      Boolean(brokenNode) && typeof brokenNode.error === "string" && /500/.test(brokenNode.error),
+      JSON.stringify(brokenNode && { name: brokenNode.name, error: brokenNode.error }));
+    check("a failed directory is not left looking empty",
+      Boolean(brokenNode) && brokenNode.pending !== true && brokenNode.children.length === 0
+      && Boolean(brokenNode.error),
+      "a node with no children and no error reads as an empty directory");
     check("failure carries a reason",
       Boolean(pooled.done.failed[0]) && /500/.test(pooled.done.failed[0].reason),
       JSON.stringify(pooled.done.failed));
 
     const capped = await runScan(page, { action: "scanDirectory", maxDepth: 5, maxDirs: 4 });
     check("directory cap is exact under concurrency", capped.done.scanned === 4, `scanned ${capped.done.scanned}`);
-    check("truncation is flagged", capped.done.truncated === true);
+    check("a capped scan reports what is left", capped.done.remaining > 0,
+      `remaining ${capped.done.remaining}`);
 
     // Cancel once the crawl has demonstrably started, rather than after a fixed
     // delay — a wall-clock delay races the crawl's own speed and made this
@@ -200,6 +209,11 @@ module.exports = async function crawlTests(playwright) {
     check("a stopped scan is flagged as cancelled", cancelled.cancelled === true);
     check("a stopped scan returns partial results",
       cancelled.scanned > 0 && cancelled.scanned < 14, `scanned ${cancelled.scanned}`);
+    // Every directory is either scanned, still on the frontier, or skipped —
+    // a cancel must not silently consume one.
+    check("a stopped scan leaves the rest reachable",
+      cancelled.scanned + cancelled.remaining + cancelled.failedCount >= 14,
+      `scanned ${cancelled.scanned} + remaining ${cancelled.remaining} + failed ${cancelled.failedCount}`);
 
     await page.close();
     await server.close();
@@ -266,6 +280,39 @@ module.exports = async function crawlTests(playwright) {
     await server.close();
   }
 
+  // --- Indexes that link each file more than once --------------------------
+  {
+    // Apache FancyIndexing and nginx fancyindex both emit an icon link and a
+    // name link for every entry, pointing at the same href.
+    const page = await browser.newPage();
+    const errors = collectPageErrors(page);
+    await page.addInitScript(CHROME_STUB);
+    await page.route("**/files/**", (route) => route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: `<!doctype html><html><head><title>Index of /files</title></head><body><table>
+        <tr><td><a href="../">../</a></td></tr>
+        <tr><td><a href="report.pdf"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="[PDF]"></a></td>
+            <td><a href="report.pdf">report.pdf</a></td></tr>
+        <tr><td><a href="sub/"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="[DIR]"></a></td>
+            <td><a href="sub/">sub/</a></td></tr></table></body></html>`
+    }));
+    await page.goto("http://fancy.test/files/");
+    await page.addScriptTag({ content: CONTENT_SCRIPT });
+
+    const done = (await runScan(page, { action: "scanDirectory", maxDepth: 1, maxDirs: 20 })).done;
+    check("no page errors (icon listing)", errors.length === 0, errors.join(" | "));
+
+    const names = flatten(done.tree);
+    check("a file linked twice is listed once",
+      names.length === new Set(names).size, names.join(","));
+    const dirs = done.tree.children.filter((c) => c.type === "dir").map((c) => c.name);
+    check("a directory linked twice is visited once",
+      dirs.length === new Set(dirs).size, dirs.join(","));
+
+    await page.close();
+  }
+
   // --- Root URLs that name the index page, and JS-rendered listings --------
   {
     const server = await startDirectoryServer({ tree: SMALL_TREE });
@@ -322,6 +369,10 @@ module.exports = async function crawlTests(playwright) {
     check("a JS-only subdirectory is reported rather than shown as empty",
       scanned.done.failedCount === 1 && /JavaScript/.test(scanned.done.failed[0].reason),
       JSON.stringify(scanned.done.failed));
+    const lazy = scanned.done.tree.children.find((c) => c.name === "lazy");
+    check("a JS-only subdirectory carries its reason on the node",
+      Boolean(lazy) && /JavaScript/.test(lazy.error || ""),
+      JSON.stringify(lazy && { name: lazy.name, error: lazy.error }));
 
     await page.close();
   }

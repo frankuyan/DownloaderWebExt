@@ -37,7 +37,10 @@ function runBackground(scriptOverrides = {}) {
         addListener(fn) {
           changedListener = fn;
         }
-      }
+      },
+      ...(scriptOverrides.searchResults
+        ? { search: async ({ id }) => scriptOverrides.searchResults[id] || [] }
+        : {})
     },
     runtime: {
       onConnect: {
@@ -148,6 +151,99 @@ async function testDownloadsNeverOverwrite() {
     started[0].file.conflictAction === "uniquify",
     `Downloads must not silently overwrite; got conflictAction=${started[0].file.conflictAction}`
   );
+}
+
+// A snapshot of session storage as it looks when the worker died mid-batch.
+function storageWithActive(active, extra = {}) {
+  const store = {
+    downloadState: {
+      queue: [], starting: [], active, completed: [], failed: [],
+      retried: 0, totalInBatch: active.length, ...extra
+    }
+  };
+  return {
+    session: {
+      async get(key) {
+        return key in store ? { [key]: store[key] } : {};
+      },
+      set(obj) {
+        Object.assign(store, obj);
+        return Promise.resolve();
+      }
+    },
+    read: () => store.downloadState
+  };
+}
+
+const ACTIVE_PAIR = [
+  [1, { url: "https://example.test/a.txt", filename: "a.txt" }],
+  [2, { url: "https://example.test/b.txt", filename: "b.txt" }]
+];
+
+async function testRestoredDownloadsAreReconciled() {
+  // Both finished while the worker was gone, so no further event will ever
+  // mention them. Without reconciliation the batch never settles.
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({
+    storage,
+    searchResults: { 1: [{ id: 1, state: "complete" }], 2: [{ id: 2, state: "interrupted" }] }
+  });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress.active === 0, `Finished downloads should no longer count as active, got ${progress.active}`);
+  assert(progress.completed === 1, `The completed download should be counted, got ${progress.completed}`);
+  assert(progress.failed === 1, `The interrupted download should be counted, got ${progress.failed}`);
+
+  const done = messages.filter((m) => m.type === "done").pop();
+  assert(done, "A batch with nothing left pending must be able to settle");
+  assert(done.total === 2, `Batch total should be preserved, got ${done.total}`);
+}
+
+async function testRestoredDownloadsStillRunningAreLeftAlone() {
+  // The worker wakes while downloads are genuinely still going; they must not
+  // be written off just because we restarted.
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({
+    storage,
+    searchResults: { 1: [{ id: 1, state: "in_progress" }], 2: [{ id: 2, state: "in_progress" }] }
+  });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress.active === 2, `Running downloads must stay active, got ${progress.active}`);
+  assert(messages.every((m) => m.type !== "done"), "A batch with running downloads must not report done");
+}
+
+async function testRestoredDownloadsTheBrowserForgotAreFailed() {
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({ storage, searchResults: { 1: [], 2: [] } });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress.active === 0, `Forgotten downloads should not stay active, got ${progress.active}`);
+  assert(progress.failed === 2, `Forgotten downloads should be retryable, got ${progress.failed}`);
+  assert(progress.completed === 0, "A download we cannot verify must not be claimed as complete");
+}
+
+async function testReconcileToleratesNoSearchApi() {
+  // downloads.search exists in both target browsers; this only guards against
+  // it being absent, which must not throw or write off live downloads.
+  const storage = storageWithActive(ACTIVE_PAIR);
+  const { port, messages } = runBackground({ storage });
+  await tick(60);
+  port.onMessage.listener({ action: "status" });
+  await tick(60);
+
+  const progress = messages.filter((m) => m.type === "progress").pop();
+  assert(progress, "Progress should still be reported without downloads.search");
+  assert(progress.active === 2, "Without a way to check, downloads are left as they were");
 }
 
 function testBackgroundPathSanitization() {
@@ -380,44 +476,6 @@ function testScanOptionResolution() {
   assert(resolveScanOptions({ maxDirs: 0 }).maxDirs === 200, "A zero directory cap should fall back to the default");
 }
 
-async function testConcurrencyHelper() {
-  const { context } = runContent();
-  const { mapWithConcurrency } = context;
-
-  // Slowest item first, so a result order matching the input proves the helper
-  // reorders by index rather than by completion.
-  const delays = [30, 5, 20, 1, 10];
-  const ordered = await mapWithConcurrency(delays, 3, async (ms) => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
-    return ms;
-  });
-  assert(ordered.join(",") === delays.join(","), `Results must keep input order, got ${ordered.join(",")}`);
-
-  let inFlight = 0;
-  let peak = 0;
-  await mapWithConcurrency(Array.from({ length: 12 }, (_, i) => i), 4, async () => {
-    inFlight += 1;
-    peak = Math.max(peak, inFlight);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    inFlight -= 1;
-  });
-  assert(peak <= 4, `Concurrency limit exceeded: peak was ${peak}`);
-  assert(peak === 4, `The limit should be saturated, peak was ${peak}`);
-
-  const empty = await mapWithConcurrency([], 4, async () => 1);
-  assert(empty.length === 0, "Empty input should produce no results and not hang");
-
-  // A bad limit must degrade to serial, never to zero workers silently
-  // resolving and dropping every item.
-  for (const badLimit of [undefined, null, NaN, 0, -3, "5", 2.5]) {
-    const out = await mapWithConcurrency([1, 2, 3], badLimit, async (n) => n * 2);
-    assert(
-      out.join(",") === "2,4,6",
-      `A limit of ${String(badLimit)} must still process every item, got ${out.join(",")}`
-    );
-  }
-}
-
 function testConcurrencyOption() {
   const { context } = runContent();
   const { resolveScanOptions } = context;
@@ -535,10 +593,13 @@ async function main() {
   testExtensionFiltering();
   testScanOptionResolution();
   testConcurrencyOption();
-  await testConcurrencyHelper();
   await testBackgroundConcurrency();
   await testBackgroundAppendsDownloadsWhileBusy();
   await testBackgroundResumesAfterWorkerRestart();
+  await testRestoredDownloadsAreReconciled();
+  await testRestoredDownloadsStillRunningAreLeftAlone();
+  await testRestoredDownloadsTheBrowserForgotAreFailed();
+  await testReconcileToleratesNoSearchApi();
   await testDownloadsNeverOverwrite();
   testTransientErrorClassification();
   await testTransientFailuresAreRetried();

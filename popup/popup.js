@@ -393,15 +393,22 @@ function renderTreeNode(node, depth, filter) {
   const fileCount = countFiles(node);
   const countSpan = document.createElement("span");
   countSpan.className = "dir-count";
+  // A directory that was never reached, or could not be read, has no children.
+  // Reporting "0 files" for either would claim it is empty.
+  const unreadable = Boolean(node.pending || node.error);
   if (node.pending) {
-    // Discovered but never fetched, so it is not an empty directory — saying
-    // "0 files" would be a lie.
     countSpan.classList.add("pending");
     countSpan.textContent = "not scanned";
-    dirCb.disabled = true;
-    toggle.disabled = true;
+  } else if (node.error) {
+    countSpan.classList.add("failed");
+    countSpan.textContent = "unavailable";
+    dirRow.title = node.error;
   } else {
     countSpan.textContent = `${fileCount} file${fileCount !== 1 ? "s" : ""}`;
+  }
+  if (unreadable) {
+    dirCb.disabled = true;
+    toggle.disabled = true;
   }
 
   dirRow.append(toggle, dirCb, dirIcon, dirName, countSpan);
@@ -448,6 +455,8 @@ function renderTreeNode(node, depth, filter) {
     // The checkbox and the toggle handle their own clicks.
     if (e.target === dirCb || e.target === toggle) return;
     e.stopPropagation();
+    // Nothing to expand, and the toggle is disabled to say so.
+    if (unreadable) return;
     toggleExpand();
   });
 
@@ -601,6 +610,7 @@ async function runPageScan() {
   scanDirBar.classList.toggle("suggested", isDirectory);
   scanDirBtn.textContent = "Scan Subdirectories";
   scanDirBtn.disabled = false;
+  continueScanBtn.classList.add("hidden");
 
   if (allFiles.length > 0) {
     badgeEl.textContent = allFiles.length;
@@ -634,15 +644,21 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // behind, and whether directories were unreachable.
 function describeScanResult(msg, fileCount) {
   const parts = [];
-  const scope = `${plural(msg.scanned, "directory", "directories")}`;
+  // A content script from before an extension update can still be live in an
+  // open tab and send the older message shape, so nothing here assumes a field.
+  const scanned = Number.isFinite(msg.scanned) ? msg.scanned : 0;
+  const remaining = Number.isFinite(msg.remaining) ? msg.remaining : 0;
+  const skipped = Number.isFinite(msg.skippedByDepth) ? msg.skippedByDepth : 0;
+  const failedCount = Number.isFinite(msg.failedCount) ? msg.failedCount : 0;
+  const scope = `${plural(scanned, "directory", "directories")}`;
   parts.push(fileCount > 0
     ? `Found ${plural(fileCount, "file", "files")} in ${scope}`
     : `No files found in ${scope}`);
 
   if (msg.cancelled) parts.push("stopped early");
-  if (msg.remaining > 0) parts.push(`${msg.remaining} not scanned yet`);
-  if (msg.skippedByDepth > 0) parts.push(`${msg.skippedByDepth} beyond the depth limit`);
-  if (msg.failedCount > 0) parts.push(`${msg.failedCount} skipped`);
+  if (remaining > 0) parts.push(`${remaining} not scanned yet`);
+  if (skipped > 0) parts.push(`${skipped} beyond the depth limit`);
+  if (failedCount > 0) parts.push(`${failedCount} skipped`);
 
   return parts.join(" \u00B7 ");
 }
@@ -685,7 +701,9 @@ function startDirectoryScan({ resume = false } = {}) {
       scanFinished = true;
       treeData = msg.tree;
       isTreeMode = true;
-      selection.clear();
+      // A resume adds to the same tree, so anything already ticked is still a
+      // real file; only a fresh scan invalidates the selection.
+      if (!msg.resumed) selection.clear();
 
       const fileCount = treeData ? countFiles(treeData) : 0;
       if (fileCount > 0) {
@@ -701,9 +719,9 @@ function startDirectoryScan({ resume = false } = {}) {
       scanDirBtn.textContent = treeData ? "Rescan" : "Scan Subdirectories";
       // Directories were discovered but not reached, so the crawl can pick up
       // where it left off instead of starting over.
-      continueScanBtn.classList.toggle("hidden", !(msg.remaining > 0));
+      continueScanBtn.classList.toggle("hidden", !(Number(msg.remaining) > 0));
       scanStatus.textContent = describeScanResult(msg, fileCount);
-      if (msg.failedCount > 0) {
+      if (msg.failedCount > 0 && Array.isArray(msg.failed)) {
         scanStatus.title = msg.failed.map((f) => `${f.url} (${f.reason})`).join("\n");
       } else {
         scanStatus.removeAttribute("title");
@@ -849,7 +867,11 @@ copyUrlsBtn.addEventListener("click", () => {
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
   const isMod = e.ctrlKey || e.metaKey;
-  const inInput = document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "SELECT";
+  // Only text entry should swallow these shortcuts. Checkboxes are inputs too,
+  // so testing the tag alone disabled Ctrl+A and "/" after ticking a file.
+  const active = document.activeElement;
+  const inInput = Boolean(active) && (active.tagName === "SELECT"
+    || (active.tagName === "INPUT" && !["checkbox", "radio", "button"].includes(active.type)));
 
   // Ctrl+A — select all (when not in an input)
   if (isMod && e.key === "a" && !inInput) {

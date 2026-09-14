@@ -20,7 +20,10 @@ const TREE = {
     ] },
     // Discovered but never fetched, because the scan hit its cap.
     { name: "unreached", path: "/files/unreached/", type: "dir", url: "https://x.test/files/unreached/",
-      children: [], pending: true }
+      children: [], pending: true },
+    // Fetched, but the server refused it.
+    { name: "broken", path: "/files/broken/", type: "dir", url: "https://x.test/files/broken/",
+      children: [], error: "HTTP 500" }
   ]
 };
 
@@ -100,6 +103,17 @@ module.exports = async function popupTests(playwright) {
     const payload = await page.evaluate(() => window.__dl.find((m) => m.action === "download"));
     check("download sends every selected file, including filtered-out ones",
       Boolean(payload) && payload.files.length === 2, JSON.stringify(payload && payload.files));
+
+    // Ctrl+A must keep working after a checkbox takes focus — a checkbox is an
+    // input, so testing the tag alone used to swallow the shortcut.
+    await page.fill("#search", "");
+    await page.waitForTimeout(200);
+    await page.click('.file-checkbox[data-url="https://x.test/b.iso"]');
+    await page.keyboard.press("Control+a");
+    await page.waitForTimeout(80);
+    check("Ctrl+A still selects all when a checkbox has focus",
+      (await page.textContent("#downloadBtn")).includes(`(${FLAT_FILES.length})`),
+      await page.textContent("#downloadBtn"));
 
     // Deselect All must clear hidden selections too.
     await page.click("#deselectAll");
@@ -184,6 +198,7 @@ module.exports = async function popupTests(playwright) {
 
     const status = await page.textContent("#scanStatus");
     check("status reports files and directories", /Found 2 files in 3 directories/.test(status), status);
+    check("status text has no undefined values", !/undefined|NaN/.test(status), status);
     check("status reports the early stop", /stopped early/.test(status), status);
     check("status reports skipped directories", /2 skipped/.test(status), status);
     check("skipped directories listed in the tooltip",
@@ -209,6 +224,46 @@ module.exports = async function popupTests(playwright) {
         return row?.querySelector(".dir-checkbox")?.disabled === true;
       }));
 
+    const failedLabel = await page.$$eval(".dir-count.failed", (els) => els.map((e) => e.textContent));
+    check("a directory that failed is labelled, not shown as empty",
+      failedLabel.length === 1 && failedLabel[0] === "unavailable", JSON.stringify(failedLabel));
+    check("the failure reason is available on the row",
+      await page.evaluate(() => {
+        const rows = [...document.querySelectorAll(".dir-node")];
+        const row = rows.find((r) => r.querySelector(".dir-name")?.textContent === "broken");
+        return row?.title === "HTTP 500";
+      }));
+    check("a directory that failed cannot be selected",
+      await page.evaluate(() => {
+        const rows = [...document.querySelectorAll(".tree-node")];
+        const row = rows.find((r) => r.querySelector(".dir-name")?.textContent === "broken");
+        return row?.querySelector(".dir-checkbox")?.disabled === true;
+      }));
+
+    // Selections must survive a resume, which merges into the same tree.
+    // Version skew: an old content script still live in a tab sends the older
+    // message, with no scanned/remaining/failed fields.
+    await page.evaluate((tree) => window.__pushScan({ type: "done", tree }), TREE);
+    await page.waitForTimeout(120);
+    const legacyStatus = await page.textContent("#scanStatus");
+    check("an older content-script message does not render undefined",
+      !/undefined|NaN/.test(legacyStatus), legacyStatus);
+    check("an older content-script message does not offer a resume",
+      !(await page.isVisible("#continueScanBtn")));
+
+    // Restore the current-shape result for the remaining assertions.
+    await page.evaluate((tree) => window.__pushScan({
+      type: "done", tree, cancelled: true, scanned: 3,
+      remaining: 2, skippedByDepth: 1, failedCount: 2,
+      failed: [{ url: "https://x.test/files/bad/", reason: "HTTP 500" },
+               { url: "https://x.test/files/slow/", reason: "timed out" }]
+    }), TREE);
+    await page.waitForTimeout(120);
+
+    await page.click('.file-checkbox[data-url="https://x.test/files/sub/inner.zip"]');
+    check("a file is selected before continuing",
+      (await page.textContent("#downloadBtn")).includes("(1)"));
+
     await page.click("#continueScanBtn");
     await page.waitForTimeout(120);
     check("continue asks the crawler to resume, not restart",
@@ -221,6 +276,9 @@ module.exports = async function popupTests(playwright) {
     }), TREE);
     await page.waitForTimeout(150);
     check("continue hidden once nothing remains", !(await page.isVisible("#continueScanBtn")));
+    check("continuing a scan keeps the selection",
+      (await page.textContent("#downloadBtn")).includes("(1)"),
+      await page.textContent("#downloadBtn"));
     check("status drops the leftover note when complete",
       !/not scanned yet/.test(await page.textContent("#scanStatus")),
       await page.textContent("#scanStatus"));
@@ -243,7 +301,6 @@ module.exports = async function popupTests(playwright) {
     await page.waitForTimeout(60);
     check("Enter re-expands the directory", (await toggle.getAttribute("aria-expanded")) === "true");
 
-    await page.click('.file-checkbox[data-url="https://x.test/files/sub/inner.zip"]');
     await page.click("#downloadBtn");
     const treePayload = await page.evaluate(() => window.__dl.find((m) => m.action === "download"));
     check("tree download keeps its relative path",
