@@ -49,7 +49,7 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 - **Keyboard shortcuts** — `Ctrl+A` select all, `Ctrl+D` download, `/` focus search, `Escape` clear filter.
 - **Filename sanitization** — Strips common prefixes (e.g., Weebly's "Download file:") and replaces characters invalid on Windows/macOS.
 - **File count badge** — Shows how many downloadable files were found.
-- **Directory scanning** — Recursively walks subdirectories from any page with same-origin folder links and lists what it finds in an interactive tree view, with configurable depth and directory limits. Directories are fetched in parallel, and a running scan can be stopped while keeping partial results.
+- **Directory scanning** — Walks subdirectories breadth-first from any page with same-origin folder links and lists what it finds in an interactive tree view, with configurable depth and directory limits. Directories are fetched in parallel, a running scan can be stopped while keeping partial results, and a scan that hit a limit can be continued from where it stopped rather than restarted.
 - **Cross-browser** — Works in both Chrome (MV3) and Firefox (109+).
 
 ---

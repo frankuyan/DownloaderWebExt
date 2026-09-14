@@ -17,7 +17,10 @@ const TREE = {
     { name: "root.pdf", path: "/files/root.pdf", type: "file", url: "https://x.test/files/root.pdf", ext: "pdf" },
     { name: "sub", path: "/files/sub/", type: "dir", url: "https://x.test/files/sub/", children: [
       { name: "inner.zip", path: "/files/sub/inner.zip", type: "file", url: "https://x.test/files/sub/inner.zip", ext: "zip" }
-    ] }
+    ] },
+    // Discovered but never fetched, because the scan hit its cap.
+    { name: "unreached", path: "/files/unreached/", type: "dir", url: "https://x.test/files/unreached/",
+      children: [], pending: true }
   ]
 };
 
@@ -172,7 +175,8 @@ module.exports = async function popupTests(playwright) {
       !(await page.evaluate(() => window.__scanDisconnected === true)));
 
     await page.evaluate((tree) => window.__pushScan({
-      type: "done", tree, truncated: false, cancelled: true, scanned: 3, failedCount: 2,
+      type: "done", tree, truncated: true, cancelled: true, scanned: 3,
+      remaining: 2, skippedByDepth: 1, failedCount: 2,
       failed: [{ url: "https://x.test/files/bad/", reason: "HTTP 500" },
                { url: "https://x.test/files/slow/", reason: "timed out" }]
     }), TREE);
@@ -181,13 +185,45 @@ module.exports = async function popupTests(playwright) {
     const status = await page.textContent("#scanStatus");
     check("status reports files and directories", /Found 2 files in 3 directories/.test(status), status);
     check("status reports the early stop", /stopped early/.test(status), status);
-    check("status reports unreachable directories", /2 unreachable/.test(status), status);
-    check("unreachable directories listed in the tooltip",
+    check("status reports skipped directories", /2 skipped/.test(status), status);
+    check("skipped directories listed in the tooltip",
       /HTTP 500/.test((await page.getAttribute("#scanStatus", "title")) || ""), "no title");
     check("controls unlocked after a scan",
       !(await page.isDisabled("#scanDirBtn")) && !(await page.isDisabled("#includeAllTypes")));
     check("stop button hidden after a scan", !(await page.isVisible("#stopScanBtn")));
     check("tree rendered", (await page.$$(".tree-file")).length === 2);
+
+    // Resuming a capped scan.
+    check("status reports what is left unscanned", /2 not scanned yet/.test(status), status);
+    check("status reports directories beyond the depth limit",
+      /1 beyond the depth limit/.test(status), status);
+    check("continue offered when directories remain", await page.isVisible("#continueScanBtn"));
+
+    const pendingLabel = await page.$$eval(".dir-count.pending", (els) => els.map((e) => e.textContent));
+    check("unreached directory is labelled, not shown as empty",
+      pendingLabel.length === 1 && pendingLabel[0] === "not scanned", JSON.stringify(pendingLabel));
+    check("unreached directory cannot be selected",
+      await page.evaluate(() => {
+        const rows = [...document.querySelectorAll(".tree-node")];
+        const row = rows.find((r) => r.querySelector(".dir-name")?.textContent === "unreached");
+        return row?.querySelector(".dir-checkbox")?.disabled === true;
+      }));
+
+    await page.click("#continueScanBtn");
+    await page.waitForTimeout(120);
+    check("continue asks the crawler to resume, not restart",
+      await page.evaluate(() => window.__scan.some((m) => m.action === "continueScan")));
+    check("continue hides itself while running", !(await page.isVisible("#continueScanBtn")));
+
+    await page.evaluate((tree) => window.__pushScan({
+      type: "done", tree, truncated: false, cancelled: false, scanned: 5,
+      scannedNow: 2, remaining: 0, skippedByDepth: 0, failedCount: 0, failed: [], resumed: true
+    }), TREE);
+    await page.waitForTimeout(150);
+    check("continue hidden once nothing remains", !(await page.isVisible("#continueScanBtn")));
+    check("status drops the leftover note when complete",
+      !/not scanned yet/.test(await page.textContent("#scanStatus")),
+      await page.textContent("#scanStatus"));
 
     const toggle = await page.$(".tree-toggle");
     check("expand control is a real button", (await toggle.evaluate((e) => e.tagName)) === "BUTTON");

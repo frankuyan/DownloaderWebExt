@@ -7,6 +7,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- Scanning from a URL that names the index page itself (`/files/index.html`
+  rather than `/files/`) found nothing at all: the base path was computed as
+  `/files/index.html/`, so every link on the page was rejected as being outside
+  the directory. Links now resolve against the containing directory.
 - Download queue now reserves slots while new downloads are starting, so the
   configured concurrency limit is enforced.
 - Tree-view downloads preserve relative directory paths while sanitizing path
@@ -39,6 +43,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reports a failure instead of throwing when it cannot be reached.
 
 ### Added
+- A scan stopped by a limit can now be continued instead of restarted. The
+  crawl keeps the directories it discovered but did not reach, and **Continue**
+  resumes from there, merging into the existing tree without re-fetching
+  anything. Each continue allows another **Max dirs** worth of directories, so
+  a large server can be walked in chunks without raising the limit. The partial
+  crawl survives closing and reopening the popup.
+- Directories found but not reached are shown in the tree as *not scanned*
+  rather than being hidden or rendered as empty folders.
+- Client-side rendered listings on the current page are now read from the live
+  DOM instead of being re-fetched, so a file browser that builds its index in
+  JavaScript is scannable. Subdirectories are still fetched as raw HTML; one
+  that arrives with no links is reported as possibly needing JavaScript rather
+  than shown as empty.
 - Downloads interrupted by a transient error (dropped connection, timeout,
   server hiccup) are now re-queued automatically for up to three attempts, and
   the retry count is surfaced in the progress line. Re-queued files go to the
@@ -71,6 +88,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   page assets stay excluded so ordinary browsing is unaffected.
 
 ### Changed
+- Directory scanning is now breadth-first rather than depth-first, so a scan cut
+  short by a limit returns a shallow view of the whole tree instead of one
+  arbitrarily deep branch.
 - Directory-listing detection no longer requires Apache-style `<pre>`/`<table>`
   markup. It now scores parent links, subdirectory links, links resolving inside
   the current directory, and link text repeating its own href, which recognises

@@ -73,6 +73,7 @@ const includeAllTypesEl = document.getElementById("includeAllTypes");
 const scanDepthEl = document.getElementById("scanDepth");
 const scanMaxDirsEl = document.getElementById("scanMaxDirs");
 const stopScanBtn = document.getElementById("stopScanBtn");
+const continueScanBtn = document.getElementById("continueScanBtn");
 
 // --- Utility ---
 function getCategoryForType(type) {
@@ -392,7 +393,16 @@ function renderTreeNode(node, depth, filter) {
   const fileCount = countFiles(node);
   const countSpan = document.createElement("span");
   countSpan.className = "dir-count";
-  countSpan.textContent = `${fileCount} file${fileCount !== 1 ? "s" : ""}`;
+  if (node.pending) {
+    // Discovered but never fetched, so it is not an empty directory — saying
+    // "0 files" would be a lie.
+    countSpan.classList.add("pending");
+    countSpan.textContent = "not scanned";
+    dirCb.disabled = true;
+    toggle.disabled = true;
+  } else {
+    countSpan.textContent = `${fileCount} file${fileCount !== 1 ? "s" : ""}`;
+  }
 
   dirRow.append(toggle, dirCb, dirIcon, dirName, countSpan);
   container.appendChild(dirRow);
@@ -615,26 +625,29 @@ function setScanRunning(running) {
   stopScanBtn.classList.toggle("hidden", !running);
   stopScanBtn.disabled = false;
   stopScanBtn.textContent = "Stop";
+  if (running) continueScanBtn.classList.add("hidden");
 }
 
-// Describes how a finished crawl ended: how much it covered, why it stopped,
-// and whether directories were unreachable.
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Describes how a finished crawl ended: how much it covered, what it left
+// behind, and whether directories were unreachable.
 function describeScanResult(msg, fileCount) {
   const parts = [];
+  const scope = `${plural(msg.scanned, "directory", "directories")}`;
   parts.push(fileCount > 0
-    ? `Found ${fileCount} file${fileCount === 1 ? "" : "s"} in ${msg.scanned} director${msg.scanned === 1 ? "y" : "ies"}`
-    : `No files found in ${msg.scanned} director${msg.scanned === 1 ? "y" : "ies"}`);
+    ? `Found ${plural(fileCount, "file", "files")} in ${scope}`
+    : `No files found in ${scope}`);
 
   if (msg.cancelled) parts.push("stopped early");
-  else if (msg.truncated) parts.push("directory limit reached");
+  if (msg.remaining > 0) parts.push(`${msg.remaining} not scanned yet`);
+  if (msg.skippedByDepth > 0) parts.push(`${msg.skippedByDepth} beyond the depth limit`);
+  if (msg.failedCount > 0) parts.push(`${msg.failedCount} skipped`);
 
-  if (msg.failedCount > 0) {
-    parts.push(`${msg.failedCount} unreachable`);
-  }
   return parts.join(" \u00B7 ");
 }
 
-function startDirectoryScan() {
+function startDirectoryScan({ resume = false } = {}) {
   if (!activeTabId || activeScanPort) return;
 
   let port;
@@ -650,7 +663,7 @@ function startDirectoryScan() {
   setScanRunning(true);
   scanDirBtn.textContent = "Scanning...";
   scanStatus.classList.remove("hidden");
-  scanStatus.textContent = "Starting scan...";
+  scanStatus.textContent = resume ? "Continuing scan..." : "Starting scan...";
 
   let dirCount = 0;
   let scanFinished = false;
@@ -686,6 +699,9 @@ function startDirectoryScan() {
 
       setScanRunning(false);
       scanDirBtn.textContent = treeData ? "Rescan" : "Scan Subdirectories";
+      // Directories were discovered but not reached, so the crawl can pick up
+      // where it left off instead of starting over.
+      continueScanBtn.classList.toggle("hidden", !(msg.remaining > 0));
       scanStatus.textContent = describeScanResult(msg, fileCount);
       if (msg.failedCount > 0) {
         scanStatus.title = msg.failed.map((f) => `${f.url} (${f.reason})`).join("\n");
@@ -700,12 +716,14 @@ function startDirectoryScan() {
   });
 
   port.postMessage({
-    action: "scanDirectory",
+    action: resume ? "continueScan" : "scanDirectory",
     maxDepth: scanSettings.maxDepth,
     maxDirs: scanSettings.maxDirs,
     includeAllTypes: scanSettings.includeAllTypes
   });
 }
+
+continueScanBtn.addEventListener("click", () => startDirectoryScan({ resume: true }));
 
 stopScanBtn.addEventListener("click", () => {
   if (!activeScanPort) return;

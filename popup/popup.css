@@ -400,6 +400,29 @@ button.primary:disabled {
   cursor: default;
 }
 
+.continue-scan-btn {
+  white-space: nowrap;
+  border-color: var(--scan-border);
+  background: var(--scan-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.continue-scan-btn:hover {
+  background: var(--scan-border);
+}
+
+.dir-count.pending {
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.tree-toggle:disabled,
+.dir-checkbox:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .scan-opt {
   display: flex;
   align-items: center;

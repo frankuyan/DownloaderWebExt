@@ -291,6 +291,13 @@ function getDirectoryPrefix(pathname) {
   return pathname.endsWith("/") ? pathname : `${pathname}/`;
 }
 
+// The directory a path lives in. Unlike getDirectoryPrefix() this drops a
+// trailing filename, so scanning a URL that names the index page itself
+// ("/files/index.html") still resolves links against "/files/".
+function getContainingDirectory(pathname) {
+  return pathname.endsWith("/") ? pathname : pathname.slice(0, pathname.lastIndexOf("/") + 1);
+}
+
 async function fetchWithTimeout(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -351,46 +358,81 @@ async function mapWithConcurrency(items, limit, fn) {
   return results;
 }
 
-async function scanDirectory(url, basePath, depth, ctx, opts) {
-  const { visited, reporter, stats } = ctx;
-  if (reporter?.cancelled) return null;
-  url = normalizeDirectoryUrl(url);
-  if (depth > opts.maxDepth || visited.has(url)) return null;
-  // Checked and claimed without awaiting in between, so concurrent workers
-  // cannot both slip past the cap or crawl the same directory twice.
-  if (visited.size >= opts.maxDirs) return null;
-  visited.add(url);
-
-  let html;
-  try {
-    const resp = await fetchWithTimeout(url);
-    if (!resp.ok) {
-      stats.failed.push({ url, reason: `HTTP ${resp.status}` });
-      return null;
-    }
-    html = await resp.text();
-  } catch (err) {
-    stats.failed.push({ url, reason: err?.name === "AbortError" ? "timed out" : "unreachable" });
-    return null;
-  }
-
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-  const links = doc.querySelectorAll("a[href]");
+// The crawl is driven from an explicit frontier rather than by recursion, for
+// two reasons: a capped scan then leaves behind the directories it did not
+// reach, so it can be continued instead of restarted; and the traversal is
+// breadth-first, so hitting the cap yields a shallow view of the whole server
+// rather than one arbitrarily deep branch.
+function createCrawlState(rootUrl) {
+  const url = normalizeDirectoryUrl(rootUrl);
   const base = new URL(url);
-  const basePrefix = getDirectoryPrefix(base.pathname);
-
-  const node = {
-    name: basePath || base.pathname.split("/").filter(Boolean).pop() || "/",
-    path: basePrefix,
+  const rootPath = getContainingDirectory(base.pathname);
+  const root = {
+    name: rootPath.split("/").filter(Boolean).pop() || "/",
+    path: rootPath,
     type: "dir",
-    url: url,
-    children: []
+    url,
+    children: [],
+    pending: true
   };
 
-  const subdirs = [];
+  return {
+    rootUrl: url,
+    root,
+    // Every directory discovered, for de-duplication; a directory can be linked
+    // from more than one parent before it is ever fetched.
+    seen: new Set([url]),
+    // Only directories actually fetched. This is what the cap counts.
+    visited: new Set(),
+    frontier: [{ url, depth: 0, node: root }],
+    failed: [],
+    skippedByDepth: 0
+  };
+}
 
-  for (const link of links) {
+function crawlIsExhausted(state) {
+  return state.frontier.length === 0;
+}
+
+async function visitDirectory(entry, state, opts) {
+  const { url, depth, node } = entry;
+  node.pending = false;
+
+  let doc;
+  if (url === state.rootUrl) {
+    // The page we are on is already rendered, scripts included. Reading the
+    // live DOM saves a request and is the only way to see a listing that is
+    // built client-side.
+    doc = document;
+  } else {
+    let html;
+    try {
+      const resp = await fetchWithTimeout(url);
+      if (!resp.ok) {
+        state.failed.push({ url, reason: `HTTP ${resp.status}` });
+        return;
+      }
+      html = await resp.text();
+    } catch (err) {
+      state.failed.push({ url, reason: err?.name === "AbortError" ? "timed out" : "unreachable" });
+      return;
+    }
+    doc = new DOMParser().parseFromString(html, "text/html");
+  }
+
+  const base = new URL(url);
+  const basePrefix = getContainingDirectory(base.pathname);
+  const anchors = doc.querySelectorAll("a[href]");
+
+  // Fetched HTML carrying no links at all is usually a listing rendered by
+  // JavaScript: the markup arrives empty and the entries are added on load.
+  // Fetching cannot see those, so say so rather than reporting an empty folder.
+  if (anchors.length === 0 && url !== state.rootUrl) {
+    state.failed.push({ url, reason: "no links in the HTML (may need JavaScript)" });
+    return;
+  }
+
+  for (const link of anchors) {
     const href = link.getAttribute("href");
     if (!href || href === "../" || href === "./" || href.startsWith("?") || href.startsWith("#")) continue;
 
@@ -409,10 +451,22 @@ async function scanDirectory(url, basePath, depth, ctx, opts) {
     const ext = getFileExtension(resolved.href);
 
     if (resolved.pathname.endsWith("/") && !ext) {
-      if (!visited.has(resolved.href)) {
-        const dirName = safeDecode(resolved.pathname.split("/").filter(Boolean).pop() || "/");
-        subdirs.push({ url: resolved.href, name: dirName });
-      }
+      if (state.seen.has(resolved.href)) continue;
+      state.seen.add(resolved.href);
+
+      // The child node is attached now, in document order, so the shape of the
+      // tree never depends on which fetch happens to finish first. It stays
+      // marked pending until the frontier reaches it.
+      const childNode = {
+        name: safeDecode(resolved.pathname.split("/").filter(Boolean).pop() || "/"),
+        path: getDirectoryPrefix(resolved.pathname),
+        type: "dir",
+        url: resolved.href,
+        children: [],
+        pending: true
+      };
+      node.children.push(childNode);
+      state.frontier.push({ url: resolved.href, depth: depth + 1, node: childNode });
     } else if (isDownloadableExtension(ext, opts.includeAllTypes)) {
       const filename = ensureExtension(sanitizeFilename(getFilename(resolved.href) || "file"), ext);
       node.children.push({
@@ -424,21 +478,42 @@ async function scanDirectory(url, basePath, depth, ctx, opts) {
       });
     }
   }
+}
 
-  const childNodes = await mapWithConcurrency(subdirs, opts.concurrency, async (sub) => {
-    if (reporter?.cancelled) return null;
-    reporter?.post({ type: "progress", url: sub.url, name: sub.name, depth });
-    return scanDirectory(sub.url, sub.name, depth + 1, ctx, opts);
-  });
+async function runCrawl(state, opts, reporter) {
+  while (state.frontier.length > 0 && state.visited.size < opts.maxDirs) {
+    if (reporter?.cancelled) break;
 
-  for (const childNode of childNodes) {
-    if (childNode) node.children.push(childNode);
+    // Slots are claimed synchronously, with no await between the cap check and
+    // adding to `visited`, so concurrent workers cannot overshoot the cap.
+    const batch = [];
+    while (batch.length < opts.concurrency
+      && state.frontier.length > 0
+      && state.visited.size < opts.maxDirs) {
+      const entry = state.frontier.shift();
+      if (state.visited.has(entry.url)) continue;
+      if (entry.depth > opts.maxDepth) {
+        state.skippedByDepth += 1;
+        continue;
+      }
+      state.visited.add(entry.url);
+      batch.push(entry);
+    }
+    if (batch.length === 0) break;
+
+    await Promise.all(batch.map(async (entry) => {
+      if (reporter?.cancelled) return;
+      reporter?.post({ type: "progress", url: entry.url, name: entry.node.name, depth: entry.depth });
+      await visitDirectory(entry, state, opts);
+    }));
   }
-
-  return node;
 }
 
 const api = typeof browser !== "undefined" ? browser : chrome;
+
+// Survives between popup sessions for as long as the tab lives, so closing and
+// reopening the popup does not throw away a partial crawl.
+let activeCrawl = null;
 
 if (!window.__fileDownloaderInjected) {
   window.__fileDownloaderInjected = true;
@@ -463,21 +538,57 @@ if (!window.__fileDownloaderInjected) {
         return;
       }
 
-      if (message.action === "scanDirectory") {
-        const opts = resolveScanOptions(message);
-        const ctx = { visited: new Set(), reporter, stats: { failed: [] } };
-        const tree = await scanDirectory(location.href, null, 0, ctx, opts);
+      if (message.action !== "scanDirectory" && message.action !== "continueScan") return;
 
-        reporter.post({
-          type: "done",
-          tree,
-          truncated: ctx.visited.size >= opts.maxDirs,
-          cancelled: reporter.cancelled,
-          scanned: ctx.visited.size,
-          failed: ctx.stats.failed.slice(0, 20),
-          failedCount: ctx.stats.failed.length
-        });
+      const opts = resolveScanOptions(message);
+
+      // A continue reuses the frontier left behind by the previous run. It only
+      // applies to the same page and the same type filter — with a different
+      // filter, the already-visited directories were filtered differently and
+      // the merged tree would be inconsistent, so that starts fresh instead.
+      const canContinue = message.action === "continueScan"
+        && activeCrawl
+        && activeCrawl.rootUrl === normalizeDirectoryUrl(location.href)
+        && activeCrawl.includeAllTypes === opts.includeAllTypes
+        && !crawlIsExhausted(activeCrawl.state);
+
+      if (canContinue) {
+        reporter.cancelled = false;
+      } else {
+        activeCrawl = {
+          rootUrl: normalizeDirectoryUrl(location.href),
+          includeAllTypes: opts.includeAllTypes,
+          state: createCrawlState(location.href)
+        };
       }
+
+      const { state } = activeCrawl;
+      const scannedBefore = state.visited.size;
+
+      // On a continue the cap counts this run's directories, not the running
+      // total — otherwise continuing without also raising Max dirs would be
+      // instantly over budget and do nothing. Repeated continues therefore walk
+      // a large server in fixed-size chunks.
+      const runOpts = canContinue
+        ? { ...opts, maxDirs: scannedBefore + opts.maxDirs }
+        : opts;
+      await runCrawl(state, runOpts, reporter);
+
+      reporter.post({
+        type: "done",
+        tree: state.root,
+        cancelled: reporter.cancelled,
+        scanned: state.visited.size,
+        scannedNow: state.visited.size - scannedBefore,
+        // Directories discovered but not reached. Non-zero means the scan can
+        // be continued rather than restarted.
+        remaining: state.frontier.length,
+        truncated: state.frontier.length > 0 && !reporter.cancelled,
+        resumed: canContinue,
+        skippedByDepth: state.skippedByDepth,
+        failed: state.failed.slice(0, 20),
+        failedCount: state.failed.length
+      });
     });
   });
 }

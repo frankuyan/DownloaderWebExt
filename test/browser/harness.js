@@ -104,8 +104,25 @@ function startDirectoryServer({ tree, delay = 0, brokenPrefixes = [], root = "/f
       }
 
       const relative = urlPath.slice(root.length).replace(/^\/+/, "");
-      const segments = relative.split("/").filter(Boolean);
+      let segments = relative.split("/").filter(Boolean);
+
+      // Real servers serve the directory index at both "/dir/" and
+      // "/dir/index.html", so the crawler must cope with either as a root.
+      let servesIndexPage = false;
+      if (segments[segments.length - 1] === "index.html") {
+        const parent = resolve(segments.slice(0, -1));
+        if (parent && typeof parent === "object") {
+          segments = segments.slice(0, -1);
+          servesIndexPage = true;
+        }
+      }
+
       const node = resolve(segments);
+      if (servesIndexPage) {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(renderIndex(urlPath, node));
+        return;
+      }
 
       if (node && typeof node === "object") {
         if (!urlPath.endsWith("/")) {

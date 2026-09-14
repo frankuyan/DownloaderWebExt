@@ -260,10 +260,10 @@ When File Downloader detects that the current page is a directory listing, it hi
 The scan bar always appears below the toolbar, on every page:
 
 ```
-┌────────────────────────────────────────────────────────┐
-│  [Scan Subdirectories] [Stop]  Depth [5 v]  Max dirs [200 v]  │
-│  Scan status here                                             │
-└────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  [Scan Subdirectories] [Stop] [Continue]  Depth [5 v]  Max [200 v] │
+│  Scan status here                                                  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 It is tinted blue when the page is recognised as a directory listing. On other
@@ -291,6 +291,29 @@ To scan all subdirectories:
 Both settings are remembered between sessions. The **Max dirs** cap is what
 ultimately bounds a **Depth: All** scan.
 
+**Order of exploration**
+
+Scanning is breadth-first: every folder at one level is explored before going
+deeper. If a scan runs out of budget you get a shallow view of the whole server
+rather than one arbitrarily deep branch.
+
+Folders that were found but not reached appear in the tree marked *not scanned*.
+They are shown rather than hidden so you can see what is still out there, and
+they cannot be selected — there is nothing in them yet.
+
+**Continuing a scan**
+
+When a scan stops with folders left over, a **Continue** button appears. It
+picks up from exactly where the previous run stopped: already-visited folders
+are not fetched again, and the new results are merged into the existing tree.
+
+Each **Continue** allows another **Max dirs** worth of directories, so you do
+not need to raise the limit to make progress — click it repeatedly to walk a
+large server in chunks. The partial crawl is kept for as long as the tab stays
+open, so closing and reopening the popup does not lose it. Changing **All file
+types** starts a fresh scan instead, since the folders already visited were
+filtered under the old setting.
+
 **Stopping a scan**
 
 While a scan runs, the other controls lock and a **Stop** button appears. Stopping
@@ -299,11 +322,20 @@ already visited, and the status line notes that the scan was stopped early. This
 is the quickest way to deal with a **Depth: All** scan that is taking longer than
 you expected.
 
-**Unreachable directories**
+**Skipped directories**
 
 Directories that time out, refuse the request, or return an error are skipped
 rather than failing the whole scan. The status line reports how many were
 skipped, and hovering it lists each one with the reason.
+
+**Listings built by JavaScript**
+
+Some file browsers send an empty page and fill the listing in with JavaScript.
+The page you are looking at is handled fine — the extension reads what the
+browser has already rendered. Subdirectories are a different matter: those are
+fetched as raw HTML, which for such a server arrives with no links in it. Rather
+than reporting an empty folder, the scan skips it with the reason "no links in
+the HTML (may need JavaScript)" so you can see what happened.
 
 **What happens during scanning:**
 - The extension follows links to subdirectories on the same server.
@@ -528,6 +560,7 @@ highlight only. Click the button and the scan runs exactly the same way.
 - Scanning stops at the configured **Depth** (default 5) and **Max dirs** (default 200). Raise either in the scan bar if results are cut short — the status line says "(limit reached)" when a cap was hit.
 - Only same-origin (same website) subdirectories are followed.
 - If the server rate-limits requests, some directories may be skipped. The status line reports how many, and hovering it shows which.
+- If the scan stopped at a limit, click **Continue** rather than **Rescan** — it resumes instead of starting over.
 - Files whose extensions are outside the supported list are ignored; tick **All file types** to include them.
 - Use **Stop** to end a long scan and keep the partial results.
 
