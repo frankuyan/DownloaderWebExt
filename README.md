@@ -37,7 +37,9 @@ A cross-browser (Chrome MV3 + Firefox) extension that scans the current page for
 - **Sort** — Sort files by name (A-Z or Z-A) within each group via dropdown.
 - **Queued downloads** — Downloads are processed in a queue with up to 3 concurrent downloads, preventing browser throttling.
 - **Download progress** — Real-time progress bar showing completed, active, and queued download counts.
-- **Retry failed** — Failed downloads can be retried with a single click.
+- **Automatic retries** — Downloads interrupted by a temporary network or server problem are re-queued and retried up to three times. Cancelled downloads and permanent failures are never retried automatically.
+- **Retry failed** — Whatever is still failing can be retried with a single click.
+- **No overwrites** — Downloads use `conflictAction: "uniquify"`, so a name collision appends a counter rather than replacing a file.
 - **Subfolder support** — Optionally download files into a named subfolder within the default download directory.
 - **Copy URLs** — Copy selected file URLs to clipboard for use with external tools (wget, curl, etc.).
 - **Duplicate filename detection** — Files with identical display names are automatically numbered (e.g., `report (2).pdf`).

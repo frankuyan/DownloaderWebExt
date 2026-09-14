@@ -2,7 +2,31 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 
 const MAX_CONCURRENT = 3;
 const MAX_SEGMENT_LENGTH = 180;
+const MAX_ATTEMPTS = 3;
 const STATE_KEY = "downloadState";
+
+// Interruptions worth another go. Everything absent from this set — a denied
+// path, no disk space, bad content, a rejected request — will fail again the
+// same way, and USER_CANCELED must never be retried: re-downloading something
+// the user just cancelled in their download manager is the worst thing we
+// could do here.
+const TRANSIENT_DOWNLOAD_ERRORS = new Set([
+  "NETWORK_FAILED",
+  "NETWORK_TIMEOUT",
+  "NETWORK_DISCONNECTED",
+  "NETWORK_SERVER_DOWN",
+  "SERVER_FAILED",
+  "SERVER_NO_RANGE",
+  "FILE_TRANSIENT_ERROR",
+  "CRASH"
+]);
+
+// Only an explicitly transient error retries. An unrecognised or missing error
+// falls through to the failed list for a manual retry, which is also what
+// happens when the error arrives in a later event than the state change.
+function isTransientError(error) {
+  return typeof error === "string" && TRANSIENT_DOWNLOAD_ERRORS.has(error);
+}
 
 // Keeps a filename within filesystem limits without losing its extension.
 function truncatePathSegment(segment) {
@@ -41,6 +65,7 @@ let active = new Map();
 let starting = [];
 let completed = [];
 let failed = [];
+let retried = 0;
 let totalInBatch = 0;
 let downloadPort = null;
 let loadPromise = restoreState();
@@ -62,6 +87,7 @@ async function loadState() {
     active = new Map(s.active || []);
     completed = s.completed || [];
     failed = s.failed || [];
+    retried = s.retried || 0;
     totalInBatch = s.totalInBatch || 0;
   } catch {}
 }
@@ -73,6 +99,7 @@ function saveState() {
     active: [...active],
     completed,
     failed,
+    retried,
     totalInBatch
   };
   api.storage.session?.set({ [STATE_KEY]: payload }).catch(() => {});
@@ -89,6 +116,7 @@ function sendProgress() {
     active: active.size + starting.length,
     completed: completed.length,
     failed: failed.length,
+    retried,
     total: totalInBatch
   });
 }
@@ -106,6 +134,7 @@ function sendDone() {
     type: "done",
     completed: completed.length,
     total: totalInBatch,
+    retried,
     failed: failed.map((f) => ({ url: f.url, filename: f.filename }))
   });
 }
@@ -133,7 +162,15 @@ async function startDownload(file) {
       const subfolder = sanitizeDownloadPath(file.subfolder, "");
       if (subfolder) filename = `${subfolder}/${filename}`;
     }
-    const id = await api.downloads.download({ url: file.url, filename });
+    // Explicit rather than relying on the browser default: two files can still
+    // sanitize to the same name (different invalid characters collapsing to
+    // "_"), and a same-named file may already exist on disk. Uniquify appends a
+    // counter instead of overwriting either.
+    const id = await api.downloads.download({
+      url: file.url,
+      filename,
+      conflictAction: "uniquify"
+    });
     removeStarting(file);
     active.set(id, file);
   } catch {
@@ -156,7 +193,17 @@ api.downloads.onChanged.addListener(async (delta) => {
       processQueue();
     } else if (delta.state.current === "interrupted") {
       active.delete(delta.id);
-      failed.push(file);
+      const attempts = file.attempts || 1;
+
+      if (isTransientError(delta.error?.current) && attempts < MAX_ATTEMPTS) {
+        // Re-queued at the back, so the rest of the batch goes first — that
+        // ordering is the spacing between attempts. The queue is persisted, so
+        // a worker restart mid-retry resumes it rather than losing the file.
+        queue.push({ ...file, attempts: attempts + 1 });
+        retried += 1;
+      } else {
+        failed.push(file);
+      }
       processQueue();
     }
   }
@@ -182,12 +229,15 @@ api.runtime.onConnect.addListener((port) => {
       } else {
         completed = [];
         failed = [];
+        retried = 0;
         queue = [...files];
         totalInBatch = queue.length;
       }
       processQueue();
     } else if (msg.action === "retry") {
-      const toRetry = [...failed];
+      // Attempt counts reset: a user asking to retry wants a fresh set of
+      // tries, not the one remaining from whatever exhausted them earlier.
+      const toRetry = failed.map((file) => ({ ...file, attempts: 1 }));
       failed = [];
       totalInBatch = completed.length + toRetry.length + active.size + starting.length + queue.length;
       queue.push(...toRetry);

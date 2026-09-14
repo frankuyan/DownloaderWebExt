@@ -39,6 +39,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reports a failure instead of throwing when it cannot be reached.
 
 ### Added
+- Downloads interrupted by a transient error (dropped connection, timeout,
+  server hiccup) are now re-queued automatically for up to three attempts, and
+  the retry count is surfaced in the progress line. Re-queued files go to the
+  back of the queue so the rest of the batch proceeds first. Cancelled downloads
+  and permanent failures (no disk space, access denied, bad content) are never
+  retried automatically, and an unrecognised error falls through to the manual
+  Retry button rather than being guessed at. A manual retry restores the full
+  automatic allowance for those files.
 - Directory scans now fetch up to 5 directories in parallel instead of strictly
   one at a time (roughly 3x faster on a latency-bound tree). The pool is bounded
   so the crawler does not hammer a stranger's file server, and tree order stays
@@ -63,6 +71,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   page assets stay excluded so ordinary browsing is unaffected.
 
 ### Changed
+- Directory-listing detection no longer requires Apache-style `<pre>`/`<table>`
+  markup. It now scores parent links, subdirectory links, links resolving inside
+  the current directory, and link text repeating its own href, which recognises
+  Python `http.server`, Caddy, h5ai and other list- and div-based indexes that
+  were previously missed.
+- Downloads now pass `conflictAction: "uniquify"` explicitly instead of relying
+  on the browser default, so two files whose names collapse to the same sanitized
+  name cannot overwrite each other.
 - The supported extension list grew from 16 to roughly 70, adding archives and
   disk images, more audio/video formats, data files, installers, e-books and
   fonts.

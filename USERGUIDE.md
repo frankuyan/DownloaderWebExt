@@ -179,13 +179,32 @@ While downloads are running, a progress bar shows:
 - **Active** — Files currently downloading (up to 3)
 - **Queued** — Files waiting to start
 
-If any downloads fail (due to network errors, broken URLs, etc.), a **Retry Failed** button appears:
+**Automatic retries**
+
+Downloads interrupted by a clearly temporary problem — a dropped connection, a
+timeout, a server hiccup — are re-queued automatically and tried up to three
+times in total. Retried files go to the back of the queue, so the rest of the
+batch downloads first rather than the extension hammering a struggling server.
+The progress line counts them ("12/20 completed · 2 retried").
+
+Anything else is left alone: a download you cancelled yourself is never
+restarted, and neither is one that failed for a reason that will not change on
+its own (no disk space, a permission problem, a rejected request). Those go
+straight to the failed list for you to decide about.
+
+If any downloads fail (because retries ran out, or because the failure was not
+retryable), a **Retry Failed** button appears:
 
 ```
 Done: 10 downloaded, 2 failed        [Retry Failed (2)]
 ```
 
-Click the button to re-attempt all failed downloads. You can retry as many times as needed.
+Click the button to re-attempt all failed downloads. You can retry as many times
+as needed, and each click restores the full allowance of automatic retries for
+those files.
+
+Downloads never overwrite an existing file. If a name is already taken — on disk
+or by another file in the same batch — the browser appends a counter instead.
 
 ### Downloading to a Subfolder
 
@@ -250,9 +269,9 @@ The scan bar always appears below the toolbar, on every page:
 It is tinted blue when the page is recognised as a directory listing. On other
 pages it stays neutral but remains clickable — the crawler works on any page
 that links to same-origin subdirectories, and the detection heuristic does not
-recognise every listing style (it looks for an "Index of" title, or a
-`<pre>`/`<table>` layout made mostly of relative links). If a file server you
-use is not detected, click the button anyway.
+recognise every listing style (it looks for an "Index of"-style title, or a mix
+of parent links, subdirectory links and link text repeating its href). If a file
+server you use is not detected, click the button anyway.
 
 To scan all subdirectories:
 
@@ -493,12 +512,15 @@ There is no workaround for this — it's a security measure by the website.
 
 The button is always present. It is only tinted blue when the extension
 recognises the page as a directory listing, based on:
-- The page title containing "Index of"
-- The page structure having `<pre>` or `<table>` elements with a high ratio of relative links
+- A page title like "Index of /files" or "Directory listing for /files"
+- Otherwise, a combination of signals: most links resolving inside the current
+  directory, a link to the parent folder, several subdirectory links, and link
+  text that repeats its own href
 
-Plenty of listing styles fail both checks (S3 browsers, Caddy's file server,
-h5ai, themed indexes). That affects the highlight only — click the button and
-the scan runs exactly the same way.
+That covers Apache and nginx indexes, Python's `http.server`, Caddy's file
+server, and most list- and table-based listings. Some themed or
+JavaScript-rendered indexes will still not be recognised — that affects the
+highlight only. Click the button and the scan runs exactly the same way.
 
 ### Directory scan is slow or incomplete
 

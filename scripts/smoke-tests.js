@@ -135,6 +135,21 @@ async function testBackgroundAppendsDownloadsWhileBusy() {
   assert(started[4].file.filename === "added-0.txt", "Appended files should start after the existing queue");
 }
 
+async function testDownloadsNeverOverwrite() {
+  const { port, started } = runBackground();
+  port.onMessage.listener({
+    action: "download",
+    files: [{ url: "https://example.test/a.txt", filename: "a.txt" }]
+  });
+  await tick(40);
+
+  assert(started.length === 1, "The file should have started");
+  assert(
+    started[0].file.conflictAction === "uniquify",
+    `Downloads must not silently overwrite; got conflictAction=${started[0].file.conflictAction}`
+  );
+}
+
 function testBackgroundPathSanitization() {
   const { context } = runBackground({ storage: {} });
 
@@ -413,6 +428,104 @@ function testConcurrencyOption() {
   assert(resolveScanOptions({ concurrency: 0 }).concurrency === 5, "Invalid concurrency should fall back to the default");
 }
 
+const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function startOneFile(port) {
+  port.onMessage.listener({
+    action: "download",
+    files: [{ url: "https://example.test/flaky.txt", filename: "flaky.txt" }]
+  });
+}
+
+function lastDone(messages) {
+  return messages.filter((msg) => msg.type === "done").pop();
+}
+
+async function testTransientFailuresAreRetried() {
+  const { port, started, messages, changedListener } = runBackground();
+  startOneFile(port);
+  await tick(40);
+  assert(started.length === 1, `Expected the file to start once, got ${started.length}`);
+
+  await changedListener()({ id: 1, state: { current: "interrupted" }, error: { current: "NETWORK_FAILED" } });
+  await tick(40);
+  assert(started.length === 2, "A transient network failure should be retried automatically");
+
+  await changedListener()({ id: 2, state: { current: "interrupted" }, error: { current: "SERVER_FAILED" } });
+  await tick(40);
+  assert(started.length === 3, "A second transient failure should be retried automatically");
+
+  await changedListener()({ id: 3, state: { current: "interrupted" }, error: { current: "NETWORK_TIMEOUT" } });
+  await tick(40);
+  assert(started.length === 3, `Retries must stop at MAX_ATTEMPTS, got ${started.length} starts`);
+
+  const done = lastDone(messages);
+  assert(done, "A settled batch should report done");
+  assert(done.failed.length === 1, `The exhausted file should be reported failed, got ${done.failed.length}`);
+  assert(done.retried === 2, `Expected 2 retries to be reported, got ${done.retried}`);
+  assert(done.total === 1, `Retries must not inflate the batch total, got ${done.total}`);
+  assert(done.completed === 0, "Nothing completed in this batch");
+}
+
+async function testNonTransientFailuresAreNotRetried() {
+  const cases = [
+    ["USER_CANCELED", "a user cancellation must never be re-downloaded"],
+    ["FILE_ACCESS_DENIED", "a denied path will fail again the same way"],
+    ["SERVER_BAD_CONTENT", "bad content is not transient"],
+    [undefined, "an unknown error should fall through to manual retry"]
+  ];
+
+  for (const [error, why] of cases) {
+    const { port, started, messages, changedListener } = runBackground();
+    startOneFile(port);
+    await tick(40);
+
+    const delta = { id: 1, state: { current: "interrupted" } };
+    if (error !== undefined) delta.error = { current: error };
+    await changedListener()(delta);
+    await tick(40);
+
+    assert(started.length === 1, `${String(error)}: should not be retried — ${why}`);
+    const done = lastDone(messages);
+    assert(done.failed.length === 1, `${String(error)}: should be reported as failed`);
+    assert(done.retried === 0, `${String(error)}: should report no retries`);
+  }
+}
+
+async function testManualRetryResetsAttempts() {
+  const { port, started, changedListener } = runBackground();
+  startOneFile(port);
+  await tick(40);
+
+  // Burn all three automatic attempts.
+  for (const id of [1, 2, 3]) {
+    await changedListener()({ id, state: { current: "interrupted" }, error: { current: "NETWORK_FAILED" } });
+    await tick(40);
+  }
+  assert(started.length === 3, `Expected 3 automatic attempts, got ${started.length}`);
+
+  // A manual retry should get its own full allowance, not the exhausted count.
+  port.onMessage.listener({ action: "retry" });
+  await tick(40);
+  assert(started.length === 4, `Manual retry should start the file again, got ${started.length}`);
+
+  await changedListener()({ id: 4, state: { current: "interrupted" }, error: { current: "NETWORK_FAILED" } });
+  await tick(40);
+  assert(started.length === 5, "A manual retry should restore automatic retries, not spend its last attempt");
+}
+
+function testTransientErrorClassification() {
+  const { context } = runBackground({ storage: {} });
+  const { isTransientError } = context;
+
+  for (const err of ["NETWORK_FAILED", "NETWORK_TIMEOUT", "SERVER_FAILED", "CRASH"]) {
+    assert(isTransientError(err), `${err} should be treated as transient`);
+  }
+  for (const err of ["USER_CANCELED", "USER_SHUTDOWN", "FILE_NO_SPACE", "SERVER_FORBIDDEN", "", null, undefined, 7]) {
+    assert(!isTransientError(err), `${String(err)} must not be treated as transient`);
+  }
+}
+
 async function main() {
   testBackgroundPathSanitization();
   testBackgroundPathTraversalIsStripped();
@@ -426,6 +539,11 @@ async function main() {
   await testBackgroundConcurrency();
   await testBackgroundAppendsDownloadsWhileBusy();
   await testBackgroundResumesAfterWorkerRestart();
+  await testDownloadsNeverOverwrite();
+  testTransientErrorClassification();
+  await testTransientFailuresAreRetried();
+  await testNonTransientFailuresAreNotRetried();
+  await testManualRetryResetsAttempts();
   await testDoneMessageCarriesBatchTotal();
   console.log("Smoke tests passed.");
 }

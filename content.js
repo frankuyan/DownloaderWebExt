@@ -137,26 +137,54 @@ function deduplicateFilenames(files) {
   });
 }
 
+// Recognises a generated index without requiring Apache's <pre>/<table>
+// markup, which excluded div- and list-based listings (S3 browsers, Caddy,
+// h5ai, themed indexes). The signals are: links resolving under the current
+// directory, a parent link, subdirectory links, and link text that repeats its
+// own href — all characteristic of a listing and rare together elsewhere.
+//
+// This only decides whether the scan bar is highlighted, so it leans towards
+// recognising a listing; the scan itself is always available.
 function isDirectoryListing() {
   const title = document.title || "";
   if (/index of\b/i.test(title)) return true;
+  if (/^directory listing for /i.test(title)) return true;
 
-  const links = document.querySelectorAll("a[href]");
-  if (links.length === 0) return false;
+  const links = Array.from(document.querySelectorAll("a[href]"));
+  if (links.length < 3) return false;
 
-  const hasPre = document.querySelector("pre");
-  const hasTable = document.querySelector("table");
-  if (!hasPre && !hasTable) return false;
+  const path = location.pathname;
+  const basePrefix = path.endsWith("/") ? path : path.slice(0, path.lastIndexOf("/") + 1);
 
-  let relCount = 0;
+  let underBase = 0;
+  let subdirectories = 0;
+  let selfDescribing = 0;
+  let hasParentLink = false;
+
   for (const link of links) {
     const href = link.getAttribute("href");
-    if (href && !href.startsWith("http") && !href.startsWith("//") && href !== "../") {
-      relCount++;
+    if (!href) continue;
+    if (href === "../" || href === "..") hasParentLink = true;
+
+    let resolved;
+    try {
+      resolved = new URL(href, location.href);
+    } catch {
+      continue;
     }
+    if (resolved.origin !== location.origin) continue;
+    if (!resolved.pathname.startsWith(basePrefix)) continue;
+
+    underBase += 1;
+    if (resolved.pathname.endsWith("/")) subdirectories += 1;
+
+    const text = (link.textContent || "").trim();
+    if (text && (text === href || text === safeDecode(href))) selfDescribing += 1;
   }
 
-  return relCount / links.length > 0.5;
+  const ratio = underBase / links.length;
+  if (ratio > 0.5 && (hasParentLink || selfDescribing >= 3)) return true;
+  return ratio > 0.7 && subdirectories >= 3;
 }
 
 function scanPage({ includeAllTypes = false } = {}) {

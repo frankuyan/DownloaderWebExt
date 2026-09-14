@@ -503,7 +503,7 @@ function postToBackground(msg) {
   }
 }
 
-function showProgress({ completed, failed, active, queued, total }) {
+function showProgress({ completed, failed, active, queued, retried, total }) {
   if (!total) {
     progressContainer.classList.add("hidden");
     return;
@@ -515,25 +515,28 @@ function showProgress({ completed, failed, active, queued, total }) {
   let text = `${completed}/${total} completed`;
   if (active > 0) text += ` \u00B7 ${active} active`;
   if (queued > 0) text += ` \u00B7 ${queued} queued`;
+  if (retried > 0) text += ` \u00B7 ${retried} retried`;
   progressText.textContent = text;
 
   retryBtn.classList.toggle("hidden", failed === 0);
   if (failed > 0) retryBtn.textContent = `Retry Failed (${failed})`;
 }
 
-function showDownloadDone({ completed, total, failed }) {
+function showDownloadDone({ completed, total, retried, failed }) {
   // The bar reflects what actually downloaded, so a fully failed batch does not
   // render as 100% complete.
   const denominator = total || completed + failed.length;
   const pct = denominator > 0 ? Math.round((completed / denominator) * 100) : 0;
   progressBar.style.width = `${pct}%`;
 
+  const retrySuffix = retried > 0 ? ` (${retried} auto-retried)` : "";
+
   if (failed.length > 0) {
-    progressText.textContent = `Done: ${completed} downloaded, ${failed.length} failed`;
+    progressText.textContent = `Done: ${completed} downloaded, ${failed.length} failed${retrySuffix}`;
     retryBtn.classList.remove("hidden");
     retryBtn.textContent = `Retry Failed (${failed.length})`;
   } else {
-    progressText.textContent = `Done: ${completed} downloaded`;
+    progressText.textContent = `Done: ${completed} downloaded${retrySuffix}`;
     retryBtn.classList.add("hidden");
     setTimeout(() => progressContainer.classList.add("hidden"), 3000);
   }
